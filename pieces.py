@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from settings import BOARD_COLS, BOARD_ROWS
+from settings import BOARD_COLS, BOARD_ROWS, DEPLOYMENT_ROWS
 
 BoardPosition = tuple[int, int]
 Game = Literal["chess", "xiangqi"]
@@ -54,6 +54,7 @@ class Piece:
                 "bishop": "Bishop",
                 "rook": "Rook",
                 "queen": "Queen",
+                "king": "King",
             }[self.kind]
 
         labels = RED_LABELS if self.side == "red" else BLACK_LABELS
@@ -67,6 +68,15 @@ def inside(position: BoardPosition) -> bool:
 
 def occupancy(pieces: Iterable[Piece]) -> dict[BoardPosition, Piece]:
     return {piece.position: piece for piece in pieces}
+
+
+def valid_king_setup_position(king: Piece, position: BoardPosition) -> bool:
+    """Return whether a king may occupy a position during secret setup."""
+    x, y = position
+    if king.game == "chess":
+        return 0 <= x < BOARD_COLS and y in DEPLOYMENT_ROWS[king.side]
+    palace_rows = range(7, 10) if king.side == "red" else range(0, 3)
+    return x in range(3, 6) and y in palace_rows
 
 
 def legal_moves(piece: Piece, pieces: Iterable[Piece]) -> list[BoardPosition]:
@@ -206,6 +216,22 @@ def _chess_moves(
     board: dict[BoardPosition, Piece],
 ) -> list[BoardPosition]:
     x, y = piece.position
+
+    if piece.kind == "king":
+        return [
+            target
+            for dx, dy in (
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            )
+            if _can_land(piece, target := (x + dx, y + dy), board)
+        ]
 
     if piece.kind == "rook":
         return _sliding_moves(piece, board, ((1, 0), (-1, 0), (0, 1), (0, -1)))

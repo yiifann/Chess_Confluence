@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -13,12 +14,20 @@ except ImportError:  # Friendly message when launched before dependencies exist.
     raise SystemExit(1)
 
 from i18n import LANGUAGE_LABELS, Language, translate
-from pieces import BoardPosition, Game, Piece, Side, legal_moves
+from pieces import (
+    BoardPosition,
+    Game,
+    Piece,
+    Side,
+    legal_moves,
+    valid_king_setup_position,
+)
 from settings import (
     BOARD_COLS,
     BOARD_ORIGIN_X,
     BOARD_ORIGIN_Y,
     BOARD_ROWS,
+    CHESS_KING_COST,
     COLORS,
     DEPLOYMENT_ROWS,
     FPS,
@@ -39,6 +48,77 @@ PixelPosition = tuple[int, int]
 GameState = Literal["menu", "setup", "handoff", "playing", "game_over"]
 HandoffTarget = Literal["black", "play"]
 ImageKey = tuple[Game, str, Side]
+
+
+@dataclass(frozen=True)
+class MovementPreview:
+    moves: tuple[BoardPosition, ...]
+    captures: tuple[BoardPosition, ...] = ()
+    blockers: tuple[BoardPosition, ...] = ()
+    blocker_label: Literal["blocker", "screen"] | None = None
+
+
+ORTHOGONAL_MOVES = (
+    (-2, 0),
+    (-1, 0),
+    (1, 0),
+    (2, 0),
+    (0, -2),
+    (0, -1),
+    (0, 1),
+    (0, 2),
+)
+DIAGONAL_MOVES = (
+    (-2, -2),
+    (-1, -1),
+    (1, -1),
+    (2, -2),
+    (-2, 2),
+    (-1, 1),
+    (1, 1),
+    (2, 2),
+)
+KNIGHT_MOVES = (
+    (-2, -1),
+    (-2, 1),
+    (-1, -2),
+    (-1, 2),
+    (1, -2),
+    (1, 2),
+    (2, -1),
+    (2, 1),
+)
+
+MOVEMENT_PREVIEWS: dict[tuple[Game, str], MovementPreview] = {
+    ("xiangqi", "king"): MovementPreview(((0, -1), (-1, 0), (1, 0), (0, 1))),
+    ("xiangqi", "bing"): MovementPreview(((0, -1), (-1, 0), (1, 0))),
+    ("xiangqi", "advisor"): MovementPreview(((-1, -1), (1, -1), (-1, 1), (1, 1))),
+    ("xiangqi", "elephant"): MovementPreview(
+        ((-2, -2), (-2, 2), (2, 2)),
+        blockers=((1, -1),),
+        blocker_label="blocker",
+    ),
+    ("xiangqi", "horse"): MovementPreview(
+        tuple(move for move in KNIGHT_MOVES if move[0] < 2),
+        blockers=((1, 0),),
+        blocker_label="blocker",
+    ),
+    ("xiangqi", "cannon"): MovementPreview(
+        ((0, -2), (0, -1), (0, 1), (0, 2)),
+        captures=((-2, 0), (2, 0)),
+        blockers=((-1, 0), (1, 0)),
+        blocker_label="screen",
+    ),
+    ("xiangqi", "rook"): MovementPreview(ORTHOGONAL_MOVES),
+    ("chess", "pawn"): MovementPreview(((0, -1), (0, -2)), ((-1, -1), (1, -1))),
+    ("chess", "knight"): MovementPreview(KNIGHT_MOVES),
+    ("chess", "bishop"): MovementPreview(DIAGONAL_MOVES),
+    ("chess", "rook"): MovementPreview(ORTHOGONAL_MOVES),
+    ("chess", "queen"): MovementPreview(ORTHOGONAL_MOVES + DIAGONAL_MOVES),
+    ("chess", "king"): MovementPreview(
+        ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+    ),
+}
 
 
 def find_cjk_font() -> str | None:
@@ -118,6 +198,7 @@ class HybridChessGame:
         self.bought_totals: dict[Side, int] = {"red": 0, "black": 0}
         self.setup_side: Side = "red"
         self.selected_catalog_index: int | None = None
+        self.selected_setup_king = False
         self.selected_piece: Piece | None = None
         self.available_moves: list[BoardPosition] = []
         self.turn: Side = "red"
@@ -175,10 +256,15 @@ class HybridChessGame:
 
     def handle_setup_click(self, position: PixelPosition, button: int) -> None:
         if button == 1:
-            for index, rect in enumerate(self.catalog_rects()):
+            for game, rect in self.king_choice_rects().items():
+                if rect.collidepoint(position):
+                    self.select_king_type(game)
+                    return
+            for index, rect in self.catalog_rects().items():
                 if rect.collidepoint(position):
                     if self.can_buy(index):
                         self.selected_catalog_index = index
+                        self.selected_setup_king = False
                         item = PIECE_CATALOG[index]
                         self.status = self.tr(
                             "status.catalog_selected",
@@ -195,7 +281,21 @@ class HybridChessGame:
         if board_position is None:
             return
         if button == 1:
-            self.try_place_piece(board_position)
+            clicked_piece = self.piece_at(board_position)
+            if (
+                not self.selected_setup_king
+                and clicked_piece is self.kings[self.setup_side]
+            ):
+                self.selected_catalog_index = None
+                self.selected_setup_king = True
+                self.status = self.tr(
+                    "status.king_selected",
+                    piece=self.describe_piece(clicked_piece),
+                )
+            elif self.selected_setup_king:
+                self.try_place_king(board_position)
+            else:
+                self.try_place_piece(board_position)
         elif button == 3:
             self.try_remove_piece(board_position)
 
@@ -263,6 +363,37 @@ class HybridChessGame:
             and self.bought_totals[self.setup_side] < MAX_BOUGHT_PIECES
         )
 
+    def select_king_type(self, game: Game) -> None:
+        king = self.kings[self.setup_side]
+        if king.game != game:
+            if game == "chess":
+                if self.budgets[self.setup_side] < CHESS_KING_COST:
+                    self.status = self.tr("status.king_upgrade_unavailable")
+                    return
+                self.budgets[self.setup_side] -= CHESS_KING_COST
+            else:
+                self.budgets[self.setup_side] += CHESS_KING_COST
+            king.game = game
+
+        self.selected_catalog_index = None
+        self.selected_setup_king = True
+        self.status = self.tr("status.king_selected", piece=self.describe_piece(king))
+
+    def try_place_king(self, position: BoardPosition) -> None:
+        king = self.kings[self.setup_side]
+        if not valid_king_setup_position(king, position):
+            status_key = f"status.king_place_{king.game}"
+            self.status = self.tr(status_key)
+            return
+        occupant = self.piece_at(position)
+        if occupant is not None and occupant is not king:
+            self.status = self.tr("status.occupied")
+            return
+
+        king.position = position
+        self.selected_setup_king = False
+        self.status = self.tr("status.king_placed", piece=self.describe_piece(king))
+
     def try_place_piece(self, position: BoardPosition) -> None:
         if self.selected_catalog_index is None:
             self.status = self.tr("status.choose_catalog")
@@ -321,7 +452,13 @@ class HybridChessGame:
         )
 
     def finish_setup(self) -> None:
+        king = self.kings[self.setup_side]
+        if not valid_king_setup_position(king, king.position):
+            self.status = self.tr(f"status.king_place_{king.game}")
+            self.selected_setup_king = True
+            return
         self.selected_catalog_index = None
+        self.selected_setup_king = False
         self.state = "handoff"
         if self.setup_side == "red":
             self.handoff_target = "black"
@@ -431,24 +568,33 @@ class HybridChessGame:
         return pygame.Rect(SIDEBAR_X + 56, 694, SIDEBAR_WIDTH - 112, 55)
 
     @staticmethod
+    def king_choice_rects() -> dict[Game, pygame.Rect]:
+        return {
+            "xiangqi": pygame.Rect(SIDEBAR_X + 130, 142, 166, 34),
+            "chess": pygame.Rect(SIDEBAR_X + 304, 142, 188, 34),
+        }
+
+    @staticmethod
     def handoff_button_rect() -> pygame.Rect:
         return pygame.Rect(WINDOW_WIDTH // 2 - 155, 490, 310, 66)
 
     @staticmethod
-    def catalog_rects() -> list[pygame.Rect]:
-        rects = []
-        item_width, item_height = 224, 54
-        start_x, start_y = SIDEBAR_X + 24, 220
-        for index in range(len(PIECE_CATALOG)):
-            col, row = index % 2, index // 2
-            rects.append(
-                pygame.Rect(
-                    start_x + col * (item_width + 18),
-                    start_y + row * (item_height + 10),
-                    item_width,
-                    item_height,
-                )
+    def catalog_rects() -> dict[int, pygame.Rect]:
+        rects = {}
+        item_width, item_height = 145, 50
+        start_x, start_y = SIDEBAR_X + 24, 238
+        visible_index = 0
+        for catalog_index, item in enumerate(PIECE_CATALOG):
+            if item["limit"] == 0:
+                continue
+            col, row = visible_index % 3, visible_index // 3
+            rects[catalog_index] = pygame.Rect(
+                start_x + col * (item_width + 10),
+                start_y + row * (item_height + 8),
+                item_width,
+                item_height,
             )
+            visible_index += 1
         return rects
 
     @staticmethod
@@ -563,15 +709,24 @@ class HybridChessGame:
         )
 
         if self.state == "setup":
-            rows = sorted(DEPLOYMENT_ROWS[self.setup_side])
-            top_y = self.board_to_pixel((0, rows[0]))[1] - GRID_SIZE // 2
-            height = (rows[-1] - rows[0] + 1) * GRID_SIZE
-            highlight = pygame.Surface(
-                ((BOARD_COLS - 1) * GRID_SIZE + 56, height), pygame.SRCALPHA
+            king = self.kings[self.setup_side]
+            selecting_general = self.selected_setup_king and king.game == "xiangqi"
+            rows = (
+                [7, 8, 9]
+                if selecting_general and self.setup_side == "red"
+                else [0, 1, 2]
+                if selecting_general
+                else sorted(DEPLOYMENT_ROWS[self.setup_side])
             )
+            columns = range(3, 6) if selecting_general else range(BOARD_COLS)
+            top_y = self.board_to_pixel((0, rows[0]))[1] - GRID_SIZE // 2
+            left_x = self.board_to_pixel((columns[0], 0))[0] - GRID_SIZE // 2
+            width = (columns[-1] - columns[0] + 1) * GRID_SIZE
+            height = (rows[-1] - rows[0] + 1) * GRID_SIZE
+            highlight = pygame.Surface((width, height), pygame.SRCALPHA)
             team_color = TEAM_COLORS[self.setup_side]
             highlight.fill((*team_color, 34))
-            self.screen.blit(highlight, (BOARD_ORIGIN_X - 28, top_y))
+            self.screen.blit(highlight, (left_x, top_y))
 
         line_color = COLORS["board_dark"]
         for row in range(BOARD_ROWS):
@@ -639,6 +794,14 @@ class HybridChessGame:
                 PIECE_RADIUS + 7,
                 5,
             )
+        if self.selected_setup_king and self.state == "setup":
+            pygame.draw.circle(
+                self.screen,
+                COLORS["selected"],
+                self.board_to_pixel(self.kings[self.setup_side].position),
+                PIECE_RADIUS + 7,
+                5,
+            )
         for piece in self.pieces:
             if visible_side is None or piece.side == visible_side:
                 self.draw_piece(piece, self.board_to_pixel(piece.position))
@@ -655,19 +818,21 @@ class HybridChessGame:
                 4 if occupant else 0,
             )
 
-    def draw_piece(self, piece: Piece, center: PixelPosition) -> None:
+    def draw_piece(
+        self, piece: Piece, center: PixelPosition, *, size: int = 48
+    ) -> None:
         team_color = TEAM_COLORS[piece.side]
         image = self.images.get((piece.game, piece.kind, piece.side))
         if image is not None:
-            scaled_image = pygame.transform.smoothscale(image, (48, 48))
+            scaled_image = pygame.transform.smoothscale(image, (size, size))
             self.screen.blit(scaled_image, scaled_image.get_rect(center=center))
             return
 
-        pygame.draw.circle(self.screen, (246, 229, 192), center, PIECE_RADIUS)
-        pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS, 3)
-        self.draw_text(
-            piece.label(), self.fonts["piece"], team_color, center, center=True
-        )
+        radius = size // 2
+        pygame.draw.circle(self.screen, (246, 229, 192), center, radius)
+        pygame.draw.circle(self.screen, team_color, center, radius, 3)
+        font = self.fonts["piece"] if size >= 44 else self.fonts["small"]
+        self.draw_text(piece.label(), font, team_color, center, center=True)
 
     def draw_setup_sidebar(self) -> None:
         self.draw_sidebar_panel()
@@ -698,22 +863,22 @@ class HybridChessGame:
             COLORS["muted"],
             (SIDEBAR_X + 290, 116),
         )
+        self.draw_king_selector()
         self.draw_text(
             self.tr("setup.instructions"),
-            self.fonts["small"],
+            self.fonts["tiny"],
             COLORS["muted"],
-            (SIDEBAR_X + 28, 158),
+            (SIDEBAR_X + 28, 184),
         )
         self.draw_text(
             self.tr("setup.shop"),
             self.fonts["body"],
             COLORS["text"],
-            (SIDEBAR_X + 28, 188),
+            (SIDEBAR_X + 28, 207),
         )
 
-        for index, (item, rect) in enumerate(zip(PIECE_CATALOG, self.catalog_rects())):
-            if item["kind"] == "king":
-                continue
+        for index, rect in self.catalog_rects().items():
+            item = PIECE_CATALOG[index]
             active = self.can_buy(index)
             selected = self.selected_catalog_index == index
             fill = COLORS["panel"] if active else (224, 220, 211)
@@ -726,7 +891,7 @@ class HybridChessGame:
             )
             text_color = COLORS["text"] if active else COLORS["muted"]
             piece_sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
-            self.draw_piece(piece_sample, (rect.x + 30, rect.y + 27))
+            self.draw_piece(piece_sample, (rect.x + 24, rect.centery), size=38)
             key = (self.setup_side, item["game"], item["kind"])
             count = self.purchase_counts.get(key, 0)
             self.draw_text(
@@ -738,13 +903,159 @@ class HybridChessGame:
                 ),
                 self.fonts["tiny"],
                 text_color,
-                (rect.x + 80, rect.y + 34),
+                (rect.x + 48, rect.y + 29),
             )
+
+        preview_item = (
+            PIECE_CATALOG[self.selected_catalog_index]
+            if self.selected_catalog_index is not None
+            else self.catalog_item_for(self.kings[self.setup_side])
+            if self.selected_setup_king
+            else None
+        )
+        if preview_item is not None:
+            self.draw_movement_preview(preview_item)
 
         self.draw_text(
             self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 662)
         )
-        self.draw_button(self.finish_setup_rect(), self.tr("setup.finish"), active=True)
+        king = self.kings[self.setup_side]
+        self.draw_button(
+            self.finish_setup_rect(),
+            self.tr("setup.finish"),
+            active=valid_king_setup_position(king, king.position),
+        )
+
+    def draw_king_selector(self) -> None:
+        king = self.kings[self.setup_side]
+        self.draw_text(
+            self.tr("setup.king_label"),
+            self.fonts["small"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 149),
+        )
+        for game, rect in self.king_choice_rects().items():
+            selected = king.game == game
+            affordable = (
+                game == "xiangqi"
+                or selected
+                or self.budgets[self.setup_side] >= CHESS_KING_COST
+            )
+            fill = (255, 239, 189) if selected else COLORS["panel"]
+            if not affordable:
+                fill = (224, 220, 211)
+            border = COLORS["selected"] if selected else (198, 191, 179)
+            pygame.draw.rect(self.screen, fill, rect, border_radius=8)
+            pygame.draw.rect(
+                self.screen, border, rect, 3 if selected else 1, border_radius=8
+            )
+            text_color = COLORS["text"] if affordable else COLORS["muted"]
+            self.draw_text(
+                self.tr(f"setup.king.{game}"),
+                self.fonts["tiny"],
+                text_color,
+                rect.center,
+                center=True,
+            )
+
+    def draw_movement_preview(self, item: CatalogItem) -> None:
+        """Draw localized movement help for the selected shop piece."""
+        panel = pygame.Rect(SIDEBAR_X + 24, 468, SIDEBAR_WIDTH - 48, 180)
+        pygame.draw.rect(self.screen, (244, 238, 224), panel, border_radius=10)
+        pygame.draw.rect(self.screen, (198, 191, 179), panel, 1, border_radius=10)
+
+        piece_name = self.catalog_item_name(item)
+        self.draw_text(
+            self.tr("setup.movement", piece=piece_name),
+            self.fonts["small"],
+            COLORS["text"],
+            (panel.x + 14, panel.y + 11),
+        )
+        self.draw_wrapped_text(
+            self.tr(f"movement.{item['game']}.{item['kind']}"),
+            self.fonts["tiny"],
+            COLORS["muted"],
+            (panel.x + 14, panel.y + 43),
+            max_width=220,
+            line_height=19,
+        )
+
+        pattern = MOVEMENT_PREVIEWS[(item["game"], item["kind"])]
+        center = (panel.x + 362, panel.y + 88)
+        spacing = 27
+        board_rect = pygame.Rect(center[0] - 66, center[1] - 66, 132, 132)
+        pygame.draw.rect(self.screen, COLORS["board"], board_rect, border_radius=6)
+        pygame.draw.rect(
+            self.screen, COLORS["board_dark"], board_rect, 2, border_radius=6
+        )
+        for grid_offset in range(-2, 3):
+            x = center[0] + grid_offset * spacing
+            y = center[1] + grid_offset * spacing
+            pygame.draw.line(
+                self.screen,
+                COLORS["board_dark"],
+                (x, center[1] - 2 * spacing),
+                (x, center[1] + 2 * spacing),
+                1,
+            )
+            pygame.draw.line(
+                self.screen,
+                COLORS["board_dark"],
+                (center[0] - 2 * spacing, y),
+                (center[0] + 2 * spacing, y),
+                1,
+            )
+
+        def preview_point(offset: BoardPosition) -> PixelPosition:
+            dx, dy = offset
+            if self.setup_side == "black":
+                dy = -dy
+            return center[0] + dx * spacing, center[1] + dy * spacing
+
+        for move_offset in pattern.moves:
+            pygame.draw.circle(
+                self.screen, COLORS["move"], preview_point(move_offset), 5
+            )
+        for capture_offset in pattern.captures:
+            pygame.draw.circle(
+                self.screen, COLORS["capture"], preview_point(capture_offset), 9, 3
+            )
+        for blocker_offset in pattern.blockers:
+            marker = pygame.Rect(0, 0, 9, 9)
+            marker.center = preview_point(blocker_offset)
+            pygame.draw.rect(self.screen, COLORS["muted"], marker, border_radius=2)
+
+        sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+        self.draw_piece(sample, center, size=34)
+        self.draw_movement_legend((panel.x + 14, panel.bottom - 19), pattern)
+
+    def draw_movement_legend(
+        self, position: PixelPosition, pattern: MovementPreview
+    ) -> None:
+        legend = [("move", COLORS["move"])]
+        if pattern.captures:
+            legend.append(("capture", COLORS["capture"]))
+        if pattern.blocker_label is not None:
+            legend.append((pattern.blocker_label, COLORS["muted"]))
+
+        x, y = position
+        for kind, color in legend:
+            if kind == "capture":
+                pygame.draw.circle(self.screen, color, (x + 5, y + 6), 5, 2)
+            elif kind in ("blocker", "screen"):
+                pygame.draw.rect(
+                    self.screen, color, pygame.Rect(x, y + 1, 10, 10), border_radius=2
+                )
+            else:
+                pygame.draw.circle(self.screen, color, (x + 5, y + 6), 4)
+            label = self.tr(f"setup.preview.{kind}")
+            self.draw_text(
+                label,
+                self.fonts["tiny"],
+                COLORS["muted"],
+                (x + 14, y - 2),
+            )
+            x += self.fonts["tiny"].size(label)[0] + 32
 
     def draw_play_sidebar(self) -> None:
         self.draw_sidebar_panel()
@@ -916,6 +1227,36 @@ class HybridChessGame:
         self.draw_text(
             label, self.fonts["button"], text_color, rect.center, center=True
         )
+
+    def draw_wrapped_text(
+        self,
+        text: str,
+        font: pygame.font.Font,
+        color: tuple[int, int, int],
+        position: PixelPosition,
+        *,
+        max_width: int,
+        line_height: int,
+    ) -> None:
+        """Draw text within a fixed width, including text without spaces."""
+        separator = " " if " " in text else ""
+        units = text.split(" ") if separator else list(text)
+        lines: list[str] = []
+        current = ""
+        for unit in units:
+            candidate = f"{current}{separator if current else ''}{unit}"
+            if not current or font.size(candidate)[0] <= max_width:
+                current = candidate
+                continue
+            lines.append(current)
+            current = unit
+        if current:
+            lines.append(current)
+
+        x, y = position
+        for line in lines:
+            self.draw_text(line, font, color, (x, y))
+            y += line_height
 
     def draw_text(
         self,

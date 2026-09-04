@@ -1,6 +1,6 @@
 """Tests for movement rules shared by the game and its UI."""
 
-from pieces import Piece, legal_moves
+from pieces import Piece, legal_moves, valid_king_setup_position
 
 
 def test_xiangqi_horse_is_blocked_at_its_leg() -> None:
@@ -35,6 +35,41 @@ def test_chess_pawn_can_only_move_two_steps_before_its_first_move() -> None:
 
     pawn.moved = True
     assert legal_moves(pawn, [pawn]) == [(4, 5)]
+
+
+def test_chess_king_moves_one_step_in_any_direction() -> None:
+    king = Piece(1, "chess", "king", "red", (4, 4))
+    friendly_piece = Piece(2, "chess", "pawn", "red", (3, 3))
+    enemy_piece = Piece(3, "chess", "pawn", "black", (5, 5))
+
+    moves = set(legal_moves(king, [king, friendly_piece, enemy_piece]))
+
+    assert (3, 3) not in moves
+    assert (5, 5) in moves
+    assert moves == {
+        (4, 3),
+        (5, 3),
+        (3, 4),
+        (5, 4),
+        (3, 5),
+        (4, 5),
+        (5, 5),
+    }
+
+
+def test_kings_have_different_secret_setup_zones() -> None:
+    general = Piece(1, "xiangqi", "king", "red", (4, 9))
+    chess_king = Piece(2, "chess", "king", "red", (4, 9))
+
+    assert valid_king_setup_position(general, (3, 7))
+    assert valid_king_setup_position(general, (5, 9))
+    assert not valid_king_setup_position(general, (2, 7))
+    assert not valid_king_setup_position(general, (4, 6))
+
+    assert valid_king_setup_position(chess_king, (0, 6))
+    assert valid_king_setup_position(chess_king, (8, 9))
+    assert not valid_king_setup_position(chess_king, (4, 5))
+    assert not valid_king_setup_position(chess_king, (9, 9))
 
 
 def test_advisor_is_not_restricted_to_the_palace() -> None:

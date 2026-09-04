@@ -30,6 +30,7 @@ SIDEBAR_WIDTH = 520
 
 STARTING_BUDGET = 40
 MAX_BOUGHT_PIECES = 20
+CHESS_KING_COST = 3
 
 # Deployment zones are expressed as board row indices.
 DEPLOYMENT_ROWS = {
@@ -140,8 +141,15 @@ PIECE_CATALOG: list[CatalogItem] = [
     {
         "game": "xiangqi",
         "kind": "king",
-        "cost": 99,
+        "cost": 0,
         "limit": 0,
         "images": {"red": "Xiangqi_gl1.svg", "black": "Xiangqi_gd1.svg"},
+    },
+    {
+        "game": "chess",
+        "kind": "king",
+        "cost": CHESS_KING_COST,
+        "limit": 0,
+        "images": {"red": "Chess_klt60.png", "black": "Chess_kdt60.png"},
     },
 ]
