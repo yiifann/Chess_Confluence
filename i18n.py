@@ -75,6 +75,12 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         "setup.preview.capture": "仅吃子",
         "setup.preview.screen": "炮架",
         "setup.preview.blocker": "阻挡",
+        "setup.preview.before_river": "过河前",
+        "setup.preview.after_river": "过河后",
+        "setup.preview.first_move": "仅首次可走两步",
+        "setup.preview.last_row": "到底线后升变",
+        "setup.preview.double_only": "圆环：仅首次两步",
+        "setup.preview.facing_allowed": "允许照面",
         "setup.finish": "确认阵容并交接",
         "movement.xiangqi.bing": "向前一步；过河后也可横走一步，不能后退。",
         "movement.xiangqi.advisor": "沿对角线走一步；本游戏不限制九宫。",
@@ -82,12 +88,16 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         "movement.xiangqi.horse": "走“日”字；马腿被堵时不能走。",
         "movement.xiangqi.cannon": "沿直线任意移动；吃子时必须隔一枚炮架。",
         "movement.xiangqi.rook": "沿横线或竖线任意移动，不能越过棋子。",
-        "movement.chess.pawn": "向前一步，首次可走两步；只能斜向前吃子。",
+        "movement.chess.pawn": (
+            "向前一步，仅首次可走两步；斜向前吃子，到达底线后必须升变。"
+        ),
         "movement.chess.knight": "走L形（两格加一格），可以跳过棋子。",
         "movement.chess.bishop": "沿对角线任意移动，不能越过棋子。",
         "movement.chess.rook": "沿横线或竖线任意移动，不能越过棋子。",
         "movement.chess.queen": "沿横线、竖线或对角线任意移动，不能越子。",
-        "movement.xiangqi.king": "在己方九宫内横走或竖走一步。",
+        "movement.xiangqi.king": (
+            "在己方九宫内横走或竖走一步；本版本允许双方将/帅在同一直线上照面。"
+        ),
         "movement.chess.king": "向周围任意方向走一步。",
         "play.title": "正式对局",
         "play.turn": "当前回合：{side}",
@@ -189,6 +199,12 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         "setup.preview.capture": "capture only",
         "setup.preview.screen": "screen",
         "setup.preview.blocker": "blocker",
+        "setup.preview.before_river": "Before river",
+        "setup.preview.after_river": "After river",
+        "setup.preview.first_move": "Two steps on first move only",
+        "setup.preview.last_row": "Promotes on last row",
+        "setup.preview.double_only": "ring = first-move double",
+        "setup.preview.facing_allowed": "Facing is allowed",
         "setup.finish": "Confirm army and hand over",
         "movement.xiangqi.bing": (
             "Moves one step forward; after crossing the river, it can also move "
@@ -212,7 +228,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Slides any distance along ranks and files, but cannot jump pieces."
         ),
         "movement.chess.pawn": (
-            "Moves forward one step, or two on its first move; captures diagonally."
+            "Moves one step, or two only on its first move; captures diagonally and "
+            "must promote on the last row."
         ),
         "movement.chess.knight": "Jumps in an L shape: two squares, then one.",
         "movement.chess.bishop": (
@@ -225,7 +242,10 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Slides any distance along ranks, files, or diagonals; it cannot jump "
             "pieces."
         ),
-        "movement.xiangqi.king": "Moves one step orthogonally within its 3×3 palace.",
+        "movement.xiangqi.king": (
+            "Moves one step orthogonally inside its 3×3 palace. In this version, "
+            "the two generals may face on an open file."
+        ),
         "movement.chess.king": "Moves one step in any direction.",
         "play.title": "Match in progress",
         "play.turn": "Turn: {side}",
@@ -327,6 +347,12 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
         "setup.preview.capture": "prise seule",
         "setup.preview.screen": "écran",
         "setup.preview.blocker": "obstacle",
+        "setup.preview.before_river": "Avant la rivière",
+        "setup.preview.after_river": "Après la rivière",
+        "setup.preview.first_move": "Deux cases au 1er coup seulement",
+        "setup.preview.last_row": "Promotion sur la dernière rangée",
+        "setup.preview.double_only": "anneau = double initial",
+        "setup.preview.facing_allowed": "Face-à-face autorisé",
         "setup.finish": "Confirmer et passer la main",
         "movement.xiangqi.bing": (
             "Avance d’une case ; après la rivière, se déplace aussi de côté. Ne recule "
@@ -349,7 +375,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Glisse sur les lignes et colonnes sans pouvoir sauter de pièce."
         ),
         "movement.chess.pawn": (
-            "Avance d’une case, ou deux au premier coup ; prend en diagonale."
+            "Avance d’une case, ou deux seulement au premier coup ; prend en "
+            "diagonale et doit être promu sur la dernière rangée."
         ),
         "movement.chess.knight": "Saute en L : deux cases, puis une.",
         "movement.chess.bishop": ("Glisse en diagonale sans pouvoir sauter de pièce."),
@@ -360,7 +387,8 @@ TRANSLATIONS: dict[Language, dict[str, str]] = {
             "Glisse sur les lignes, colonnes ou diagonales sans sauter de pièce."
         ),
         "movement.xiangqi.king": (
-            "Avance d’une case en ligne droite dans son palais 3×3."
+            "Avance d’une case en ligne droite dans son palais 3×3. Dans cette "
+            "version, les deux généraux peuvent se faire face."
         ),
         "movement.chess.king": "Avance d’une case dans toutes les directions.",
         "play.title": "Partie en cours",

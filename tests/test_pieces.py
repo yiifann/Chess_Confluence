@@ -28,6 +28,14 @@ def test_xiangqi_cannon_needs_exactly_one_screen_to_capture() -> None:
     assert (0, 6) not in moves
 
 
+def test_xiangqi_soldier_gains_sideways_moves_after_crossing_river() -> None:
+    soldier = Piece(1, "xiangqi", "bing", "red", (4, 6))
+    assert legal_moves(soldier, [soldier]) == [(4, 5)]
+
+    soldier.position = (4, 4)
+    assert set(legal_moves(soldier, [soldier])) == {(4, 3), (3, 4), (5, 4)}
+
+
 def test_chess_pawn_can_only_move_two_steps_before_its_first_move() -> None:
     pawn = Piece(1, "chess", "pawn", "red", (4, 6))
 

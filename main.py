@@ -150,6 +150,7 @@ class HybridChessGame:
         self.clock = pygame.time.Clock()
         self.font_path = find_cjk_font()
         self.fonts = {
+            "micro": pygame.font.Font(self.font_path, 13),
             "tiny": pygame.font.Font(self.font_path, 15),
             "small": pygame.font.Font(self.font_path, 18),
             "body": pygame.font.Font(self.font_path, 22),
@@ -604,7 +605,7 @@ class HybridChessGame:
         total_width = len(kinds) * item_width + (len(kinds) - 1) * gap
         start_x = (WINDOW_WIDTH - total_width) // 2
         return {
-            kind: pygame.Rect(start_x + index * (item_width + gap), 410, item_width, 62)
+            kind: pygame.Rect(start_x + index * (item_width + gap), 396, item_width, 82)
             for index, kind in enumerate(kinds)
         }
 
@@ -980,7 +981,18 @@ class HybridChessGame:
             line_height=19,
         )
 
-        pattern = MOVEMENT_PREVIEWS[(item["game"], item["kind"])]
+        preview_key = (item["game"], item["kind"])
+        if preview_key == ("xiangqi", "bing"):
+            self.draw_xiangqi_soldier_preview(panel, item)
+            return
+        if preview_key == ("chess", "pawn"):
+            self.draw_chess_pawn_preview(panel, item)
+            return
+        if preview_key == ("xiangqi", "king"):
+            self.draw_general_preview(panel, item)
+            return
+
+        pattern = MOVEMENT_PREVIEWS[preview_key]
         center = (panel.x + 362, panel.y + 88)
         spacing = 27
         board_rect = pygame.Rect(center[0] - 66, center[1] - 66, 132, 132)
@@ -1028,6 +1040,195 @@ class HybridChessGame:
         sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
         self.draw_piece(sample, center, size=34)
         self.draw_movement_legend((panel.x + 14, panel.bottom - 19), pattern)
+
+    def draw_preview_grid(
+        self,
+        center: PixelPosition,
+        *,
+        columns: int,
+        rows: int,
+        spacing: int,
+    ) -> None:
+        """Draw a compact board centered on a preview diagram."""
+        half_width = (columns - 1) * spacing // 2
+        half_height = (rows - 1) * spacing // 2
+        board_rect = pygame.Rect(
+            center[0] - half_width - 8,
+            center[1] - half_height - 8,
+            half_width * 2 + 16,
+            half_height * 2 + 16,
+        )
+        pygame.draw.rect(self.screen, COLORS["board"], board_rect, border_radius=5)
+        pygame.draw.rect(
+            self.screen, COLORS["board_dark"], board_rect, 2, border_radius=5
+        )
+        for column in range(columns):
+            x = center[0] + (column - (columns - 1) // 2) * spacing
+            pygame.draw.line(
+                self.screen,
+                COLORS["board_dark"],
+                (x, center[1] - half_height),
+                (x, center[1] + half_height),
+                1,
+            )
+        for row in range(rows):
+            y = center[1] + (row - (rows - 1) // 2) * spacing
+            pygame.draw.line(
+                self.screen,
+                COLORS["board_dark"],
+                (center[0] - half_width, y),
+                (center[0] + half_width, y),
+                1,
+            )
+
+    def oriented_preview_point(
+        self,
+        origin: PixelPosition,
+        offset: BoardPosition,
+        spacing: int,
+    ) -> PixelPosition:
+        dx, dy = offset
+        if self.setup_side == "black":
+            dy = -dy
+        return origin[0] + dx * spacing, origin[1] + dy * spacing
+
+    def draw_xiangqi_soldier_preview(
+        self, panel: pygame.Rect, item: CatalogItem
+    ) -> None:
+        spacing = 23
+        diagrams = (
+            (panel.x + 299, self.tr("setup.preview.before_river"), ((0, -1),)),
+            (
+                panel.x + 410,
+                self.tr("setup.preview.after_river"),
+                ((0, -1), (-1, 0), (1, 0)),
+            ),
+        )
+        for center_x, label, moves in diagrams:
+            self.draw_wrapped_text(
+                label,
+                self.fonts["micro"],
+                COLORS["muted"],
+                (center_x, panel.y + 39),
+                max_width=100,
+                line_height=13,
+                center=True,
+            )
+            center = (center_x, panel.y + 95)
+            self.draw_preview_grid(center, columns=3, rows=3, spacing=spacing)
+            for move in moves:
+                pygame.draw.circle(
+                    self.screen,
+                    COLORS["move"],
+                    self.oriented_preview_point(center, move, spacing),
+                    5,
+                )
+            sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+            self.draw_piece(sample, center, size=28)
+        self.draw_movement_legend(
+            (panel.x + 14, panel.bottom - 19), MovementPreview(((0, -1),))
+        )
+
+    def draw_chess_pawn_preview(self, panel: pygame.Rect, item: CatalogItem) -> None:
+        spacing = 19
+        first_center = (panel.x + 300, panel.y + 106)
+        self.draw_wrapped_text(
+            self.tr("setup.preview.first_move"),
+            self.fonts["micro"],
+            COLORS["muted"],
+            (first_center[0], panel.y + 37),
+            max_width=104,
+            line_height=13,
+            center=True,
+        )
+        self.draw_preview_grid(first_center, columns=3, rows=5, spacing=spacing)
+        pawn_center = self.oriented_preview_point(first_center, (0, 1), spacing)
+        one_step = self.oriented_preview_point(pawn_center, (0, -1), spacing)
+        two_step = self.oriented_preview_point(pawn_center, (0, -2), spacing)
+        pygame.draw.circle(self.screen, COLORS["move"], one_step, 5)
+        pygame.draw.circle(self.screen, COLORS["move"], two_step, 5)
+        pygame.draw.circle(self.screen, COLORS["selected"], two_step, 10, 3)
+        for capture_offset in ((-1, -1), (1, -1)):
+            pygame.draw.circle(
+                self.screen,
+                COLORS["capture"],
+                self.oriented_preview_point(pawn_center, capture_offset, spacing),
+                8,
+                3,
+            )
+        pawn = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+        self.draw_piece(pawn, pawn_center, size=26)
+
+        promotion_center = (panel.x + 410, panel.y + 106)
+        self.draw_wrapped_text(
+            self.tr("setup.preview.last_row"),
+            self.fonts["micro"],
+            COLORS["muted"],
+            (promotion_center[0], panel.y + 37),
+            max_width=104,
+            line_height=13,
+            center=True,
+        )
+        self.draw_preview_grid(promotion_center, columns=5, rows=5, spacing=spacing)
+        start_y = promotion_center[1] + (
+            2 * spacing if self.setup_side == "red" else -2 * spacing
+        )
+        final_y = promotion_center[1] + (
+            -2 * spacing if self.setup_side == "red" else 2 * spacing
+        )
+        pygame.draw.line(
+            self.screen,
+            COLORS["move"],
+            (promotion_center[0], start_y),
+            (promotion_center[0], final_y),
+            3,
+        )
+        self.draw_piece(pawn, (promotion_center[0], start_y), size=22)
+        for index, kind in enumerate(("queen", "rook", "bishop", "knight")):
+            promoted = Piece(0, "chess", kind, self.setup_side, (0, 0))
+            icon_x = promotion_center[0] + (index * 22) - 33
+            self.draw_piece(promoted, (icon_x, final_y), size=20)
+
+        pawn_pattern = MovementPreview(((0, -1), (0, -2)), captures=((-1, -1), (1, -1)))
+        self.draw_movement_legend((panel.x + 14, panel.bottom - 19), pawn_pattern)
+        double_step_marker = (panel.x + 305, panel.bottom - 13)
+        pygame.draw.circle(self.screen, COLORS["selected"], double_step_marker, 6, 2)
+        self.draw_text(
+            self.tr("setup.preview.double_only"),
+            self.fonts["micro"],
+            COLORS["selected"],
+            (double_step_marker[0] + 11, panel.bottom - 20),
+        )
+
+    def draw_general_preview(self, panel: pygame.Rect, item: CatalogItem) -> None:
+        center = (panel.x + 362, panel.y + 88)
+        spacing = 27
+        self.draw_preview_grid(center, columns=5, rows=5, spacing=spacing)
+        own_center = self.oriented_preview_point(center, (0, 1), spacing)
+        enemy_center = self.oriented_preview_point(center, (0, -2), spacing)
+        pygame.draw.line(self.screen, COLORS["accent"], own_center, enemy_center, 3)
+        for move in ((0, -1), (-1, 0), (1, 0), (0, 1)):
+            pygame.draw.circle(
+                self.screen,
+                COLORS["move"],
+                self.oriented_preview_point(own_center, move, spacing),
+                5,
+            )
+        own_general = Piece(0, "xiangqi", "king", self.setup_side, (0, 0))
+        enemy_general = Piece(0, "xiangqi", "king", own_general.enemy_side, (0, 0))
+        self.draw_piece(enemy_general, enemy_center, size=28)
+        self.draw_piece(own_general, own_center, size=30)
+        self.draw_movement_legend(
+            (panel.x + 14, panel.bottom - 19), MovementPreview(((0, -1),))
+        )
+        facing_label = f"OK: {self.tr('setup.preview.facing_allowed')}"
+        self.draw_text(
+            facing_label,
+            self.fonts["micro"],
+            COLORS["accent"],
+            (panel.x + 344, panel.bottom - 21),
+            center=True,
+        )
 
     def draw_movement_legend(
         self, position: PixelPosition, pattern: MovementPreview
@@ -1175,8 +1376,18 @@ class HybridChessGame:
             (640, 338),
             center=True,
         )
+        side = self.pending_promotion.side if self.pending_promotion else self.turn
         for kind, rect in self.promotion_rects().items():
-            self.draw_button(rect, self.tr(f"promotion.{kind}"), active=True)
+            self.draw_button(rect, "", active=True)
+            promoted = Piece(0, "chess", kind, side, (0, 0))
+            self.draw_piece(promoted, (rect.centerx, rect.y + 30), size=42)
+            self.draw_text(
+                self.tr(f"piece.chess.{kind}"),
+                self.fonts["micro"],
+                COLORS["white"],
+                (rect.centerx, rect.bottom - 14),
+                center=True,
+            )
 
     def draw_game_over_modal(self) -> None:
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
@@ -1237,6 +1448,7 @@ class HybridChessGame:
         *,
         max_width: int,
         line_height: int,
+        center: bool = False,
     ) -> None:
         """Draw text within a fixed width, including text without spaces."""
         separator = " " if " " in text else ""
@@ -1255,7 +1467,7 @@ class HybridChessGame:
 
         x, y = position
         for line in lines:
-            self.draw_text(line, font, color, (x, y))
+            self.draw_text(line, font, color, (x, y), center=center)
             y += line_height
 
     def draw_text(

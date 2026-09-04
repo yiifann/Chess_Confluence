@@ -20,6 +20,7 @@ RED_LABELS = {
     "rook": "車",
     "cannon": "炮",
     "pawn": "兵",
+    "bing": "兵",
 }
 
 BLACK_LABELS = {
@@ -30,6 +31,7 @@ BLACK_LABELS = {
     "rook": "車",
     "cannon": "砲",
     "pawn": "卒",
+    "bing": "卒",
 }
 
 
@@ -200,7 +202,7 @@ def _xiangqi_moves(
             and _can_land(piece, target, board)
         ]
 
-    if piece.kind == "pawn":
+    if piece.kind == "bing":
         forward = -1 if piece.side == "red" else 1
         pawn_targets = [(x, y + forward)]
         crossed_river = y <= 4 if piece.side == "red" else y >= 5
