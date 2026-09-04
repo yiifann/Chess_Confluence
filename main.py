@@ -39,13 +39,13 @@ Position_pixel = tuple[int, int]
 def find_cjk_font() -> str | None:
     """Pick a commonly available CJK font on Windows, macOS, or Linux."""
     candidates = (
+        "wenquanyimicrohei",
         "microsoftyahei",
         "microsoftjhenghei",
         "pingfangsc",
         "hiraginosansgb",
         "notosanscjksc",
         "sourcehansanscn",
-        "wenquanyimicrohei",
         "simhei",
         "arialunicodems",
     )
@@ -561,14 +561,15 @@ class HybridChessGame:
     # TODO: update draw_piece method
     def draw_piece(self, piece: Piece, center: Position_pixel) -> None:
         team_color = TEAM_COLORS[piece.side]
-        if piece.game == "xiangqi":
-            pygame.draw.circle(self.screen, (246, 229, 192), center, PIECE_RADIUS)
-            pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS, 3)
-            pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS - 5, 1)
-            self.draw_text(piece.label(), self.fonts["piece"], team_color, center, center=True)
-        else:
-            image = self.images[piece.kind][piece.side]
-            self.screen.blit(image, image.get_rect(center=center))
+        # if piece.game == "xiangqi":
+        #     pygame.draw.circle(self.screen, (246, 229, 192), center, PIECE_RADIUS)
+        #     pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS, 3)
+        #     pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS - 5, 1)
+        #     self.draw_text(piece.label(), self.fonts["piece"], team_color, center, center=True)
+        # else:
+        image = self.images[piece.kind][piece.side]
+        image = pygame.transform.smoothscale(image, (48, 48))
+        self.screen.blit(image, image.get_rect(center=center))
             # rect = pygame.Rect(0, 0, PIECE_RADIUS * 2, PIECE_RADIUS * 2)
             # rect.center = center
             # pygame.draw.rect(self.screen, team_color, rect, border_radius=8)
@@ -603,6 +604,8 @@ class HybridChessGame:
         self.draw_text("棋子商店", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 188))
 
         for index, (item, rect) in enumerate(zip(PIECE_CATALOG, self.catalog_rects())):
+            if item["kind"] == "king":
+                continue
             active = self.can_buy(index)
             selected = self.selected_catalog_index == index
             fill = COLORS["panel"] if active else (224, 220, 211)

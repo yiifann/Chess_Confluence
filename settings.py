@@ -48,14 +48,14 @@ COLORS = {
 PIECE_CATALOG = [
     {
         "game": "xiangqi",
-        "kind": "pawn",
+        "kind": "bing",
         "name": "中象·兵/卒",
         "short": "兵",
         "cost": 1,
         "limit": 5,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_sl1.svg",
+            "black": "Xiangqi_sd1.svg"
         }
     },
     {
@@ -66,8 +66,8 @@ PIECE_CATALOG = [
         "cost": 2,
         "limit": 2,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_al1.svg",
+            "black": "Xiangqi_ad1.svg"
         }
     },
     {
@@ -78,8 +78,8 @@ PIECE_CATALOG = [
         "cost": 2,
         "limit": 2,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_el1.svg",
+            "black": "Xiangqi_ed1.svg"
         }
     },
     {
@@ -90,8 +90,8 @@ PIECE_CATALOG = [
         "cost": 3,
         "limit": 2,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_hl1.svg",
+            "black": "Xiangqi_hd1.svg"
         }
     },
     {
@@ -102,8 +102,8 @@ PIECE_CATALOG = [
         "cost": 4,
         "limit": 2,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_cl1.svg",
+            "black": "Xiangqi_cd1.svg"
         }
     },
     {
@@ -114,8 +114,8 @@ PIECE_CATALOG = [
         "cost": 5,
         "limit": 2,
         "images": {
-            "red": "",
-            "black": ""
+            "red": "Xiangqi_rl1.svg",
+            "black": "Xiangqi_rd1.svg"
         }
     },
     {
@@ -177,6 +177,18 @@ PIECE_CATALOG = [
             "red": "Chess_qlt60.png",
             "black": "Chess_qdt60.png"
         }
+    },
+    {
+            "game": "xiangqi",
+            "kind": "king",
+            "name": "中象·将/帅",
+            "short": "帅",
+            "cost": 99,
+            "limit": 0,
+            "images": {
+                "red": "Xiangqi_gl1.svg",
+                "black": "Xiangqi_gd1.svg"
+            }
     },
 ]
 
