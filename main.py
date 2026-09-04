@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import math
-import sys
 from pathlib import Path
+from typing import Literal
 
 try:
     import pygame
 except ImportError:  # Friendly message when launched before dependencies exist.
-    print("缺少 pygame。请先运行：python -m pip install -r requirements.txt")
+    print("pygame is missing. Run: python -m pip install -r requirements.txt")
     raise SystemExit(1)
 
-from pieces import Piece, legal_moves
-from pieces import Position_grid, Game, Side
+from i18n import LANGUAGE_LABELS, Language, translate
+from pieces import BoardPosition, Game, Piece, Side, legal_moves
 from settings import (
     BOARD_COLS,
     BOARD_ORIGIN_X,
@@ -32,8 +32,13 @@ from settings import (
     TEAM_COLORS,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
+    CatalogItem,
 )
-Position_pixel = tuple[int, int]
+
+PixelPosition = tuple[int, int]
+GameState = Literal["menu", "setup", "handoff", "playing", "game_over"]
+HandoffTarget = Literal["black", "play"]
+ImageKey = tuple[Game, str, Side]
 
 
 def find_cjk_font() -> str | None:
@@ -59,7 +64,8 @@ def find_cjk_font() -> str | None:
 class HybridChessGame:
     def __init__(self) -> None:
         pygame.init()
-        pygame.display.set_caption("融合棋局 · Hybrid Chess Demo")
+        self.language: Language = "zh"
+        pygame.display.set_caption(self.tr("window_title"))
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.clock = pygame.time.Clock()
         self.font_path = find_cjk_font()
@@ -73,50 +79,52 @@ class HybridChessGame:
             "title": pygame.font.Font(self.font_path, 48),
         }
         self.running = True
-        self.state = "menu"
-        # load piece images
+        self.state: GameState = "menu"
         self.load_images()
         self.reset_match()
 
-    def load_images(self):
-        self.images = {}
-        for piece in PIECE_CATALOG:
-            self.images[piece["kind"]] = {}
-            # print(Path(__file__).parent / "assets" / piece["images"]["red"])
-            try:
-                self.images[piece["kind"]]["red"] = pygame.image.load(Path(__file__).parent / "assets" / piece["images"]["red"]).convert_alpha()
-                self.images[piece["kind"]]["black"] = pygame.image.load(Path(__file__).parent / "assets" / piece["images"]["black"]).convert_alpha()
-            except:
-                pass
+    def load_images(self) -> None:
+        """Load each game-specific piece image, leaving fallback drawing available."""
+        self.images: dict[ImageKey, pygame.Surface] = {}
+        assets_dir = Path(__file__).parent / "assets"
+        for item in PIECE_CATALOG:
+            for side in ("red", "black"):
+                image_path = assets_dir / item["images"][side]
+                try:
+                    image = pygame.image.load(image_path).convert_alpha()
+                except (FileNotFoundError, pygame.error):
+                    continue
+                self.images[(item["game"], item["kind"], side)] = image
 
-    def is_checked(self, side : Side) -> bool:
-        for piece in self.pieces: 
-            if self.kings[side].position in legal_moves(piece=piece, pieces=self.pieces):
-                return True
-        return False
+    def is_checked(self, side: Side) -> bool:
+        king_position = self.kings[side].position
+        return any(
+            piece.side != side and king_position in legal_moves(piece, self.pieces)
+            for piece in self.pieces
+        )
 
     def reset_match(self) -> None:
         self.pieces: list[Piece] = [
             Piece(1, "xiangqi", "king", "red", (4, 9)),
             Piece(2, "xiangqi", "king", "black", (4, 0)),
         ]
-        self.kings: dict[Side : Piece] = {
-            "red": self.pieces[0],
-            "black": self.pieces[1]
-        }
+        self.kings: dict[Side, Piece] = {"red": self.pieces[0], "black": self.pieces[1]}
         self.next_piece_id = 3
-        self.budgets = {"red": STARTING_BUDGET, "black": STARTING_BUDGET}
-        self.purchase_counts: dict[tuple[str, str, str], int] = {}
-        self.bought_totals = {"red": 0, "black": 0}
-        self.setup_side = "red"
+        self.budgets: dict[Side, int] = {
+            "red": STARTING_BUDGET,
+            "black": STARTING_BUDGET,
+        }
+        self.purchase_counts: dict[tuple[Side, Game, str], int] = {}
+        self.bought_totals: dict[Side, int] = {"red": 0, "black": 0}
+        self.setup_side: Side = "red"
         self.selected_catalog_index: int | None = None
         self.selected_piece: Piece | None = None
-        self.available_moves: list[Position_grid] = []
-        self.turn = "red"
+        self.available_moves: list[BoardPosition] = []
+        self.turn: Side = "red"
         self.winner: Side | None = None
         self.pending_promotion: Piece | None = None
-        self.handoff_target = "black"
-        self.status = "红方请选择棋子并在己方后四行部署。"
+        self.handoff_target: HandoffTarget = "black"
+        self.status = self.tr("status.setup.red")
 
     # ---------- Main loop and events ----------
 
@@ -155,21 +163,29 @@ class HybridChessGame:
         elif self.state == "game_over":
             self.handle_game_over_click(event.pos)
 
-    def handle_menu_click(self, position: Position_pixel) -> None:
+    def handle_menu_click(self, position: PixelPosition) -> None:
+        for language, rect in self.language_rects().items():
+            if rect.collidepoint(position):
+                self.language = language
+                pygame.display.set_caption(self.tr("window_title"))
+                return
         if self.menu_start_rect().collidepoint(position):
             self.reset_match()
             self.state = "setup"
 
-    def handle_setup_click(self, position: Position_pixel, button: int) -> None:
+    def handle_setup_click(self, position: PixelPosition, button: int) -> None:
         if button == 1:
             for index, rect in enumerate(self.catalog_rects()):
                 if rect.collidepoint(position):
                     if self.can_buy(index):
                         self.selected_catalog_index = index
                         item = PIECE_CATALOG[index]
-                        self.status = f"已选择{item['name']}，点击高亮部署区放置。"
+                        self.status = self.tr(
+                            "status.catalog_selected",
+                            piece=self.catalog_item_name(item),
+                        )
                     else:
-                        self.status = "资金不足、已达该棋子上限，或总棋子数已满。"
+                        self.status = self.tr("status.buy_unavailable")
                     return
             if self.finish_setup_rect().collidepoint(position):
                 self.finish_setup()
@@ -183,20 +199,20 @@ class HybridChessGame:
         elif button == 3:
             self.try_remove_piece(board_position)
 
-    def handle_handoff_click(self, position: Position_pixel) -> None:
+    def handle_handoff_click(self, position: PixelPosition) -> None:
         if not self.handoff_button_rect().collidepoint(position):
             return
         if self.handoff_target == "black":
             self.setup_side = "black"
             self.selected_catalog_index = None
-            self.status = "黑方请选择棋子并在己方前三行部署。"
+            self.status = self.tr("status.setup.black")
             self.state = "setup"
         else:
             self.turn = "red"
-            self.status = "红方先行：点击己方棋子查看合法落点。"
+            self.status = self.tr("status.play_start")
             self.state = "playing"
 
-    def handle_play_click(self, position: Position_pixel, button: int) -> None:
+    def handle_play_click(self, position: PixelPosition, button: int) -> None:
         if button != 1:
             return
         if self.pending_promotion is not None:
@@ -219,13 +235,15 @@ class HybridChessGame:
         if clicked_piece and clicked_piece.side == self.turn:
             self.selected_piece = clicked_piece
             self.available_moves = legal_moves(clicked_piece, self.pieces)
-            self.status = f"已选择 {self.describe_piece(clicked_piece)}。"
+            self.status = self.tr(
+                "status.piece_selected", piece=self.describe_piece(clicked_piece)
+            )
             return
         self.selected_piece = None
         self.available_moves = []
-        self.status = "这里没有本方可操作的棋子。"
+        self.status = self.tr("status.no_piece")
 
-    def handle_game_over_click(self, position: Position_pixel) -> None:
+    def handle_game_over_click(self, position: PixelPosition) -> None:
         restart, menu = self.game_over_rects()
         if restart.collidepoint(position):
             self.reset_match()
@@ -245,18 +263,18 @@ class HybridChessGame:
             and self.bought_totals[self.setup_side] < MAX_BOUGHT_PIECES
         )
 
-    def try_place_piece(self, position: Position_grid) -> None:
+    def try_place_piece(self, position: BoardPosition) -> None:
         if self.selected_catalog_index is None:
-            self.status = "请先从右侧商店选择一种棋子。"
+            self.status = self.tr("status.choose_catalog")
             return
         if position[1] not in DEPLOYMENT_ROWS[self.setup_side]:
-            self.status = "只能将棋子放在己方的三行部署区内。"
+            self.status = self.tr("status.deployment_only")
             return
         if self.piece_at(position) is not None:
-            self.status = "这个位置已经有棋子了。"
+            self.status = self.tr("status.occupied")
             return
         if not self.can_buy(self.selected_catalog_index):
-            self.status = "当前已无法购买这枚棋子。"
+            self.status = self.tr("status.cannot_buy")
             self.selected_catalog_index = None
             return
 
@@ -274,17 +292,21 @@ class HybridChessGame:
         key = (self.setup_side, item["game"], item["kind"])
         self.purchase_counts[key] = self.purchase_counts.get(key, 0) + 1
         self.bought_totals[self.setup_side] += 1
-        self.status = f"已部署{item['name']}，剩余资金 {self.budgets[self.setup_side]}。"
+        self.status = self.tr(
+            "status.placed",
+            piece=self.catalog_item_name(item),
+            budget=self.budgets[self.setup_side],
+        )
         if not self.can_buy(self.selected_catalog_index):
             self.selected_catalog_index = None
 
-    def try_remove_piece(self, position: Position_grid) -> None:
+    def try_remove_piece(self, position: BoardPosition) -> None:
         piece = self.piece_at(position)
         if piece is None or piece.side != self.setup_side:
-            self.status = "右键点击己方已购买的棋子可以撤回并退款。"
+            self.status = self.tr("status.remove_hint")
             return
         if piece.kind == "king":
-            self.status = "将/帅的位置固定，不能撤回。"
+            self.status = self.tr("status.king_fixed")
             return
         item = self.catalog_item_for(piece)
         self.pieces.remove(piece)
@@ -292,7 +314,11 @@ class HybridChessGame:
         key = (piece.side, piece.game, piece.kind)
         self.purchase_counts[key] -= 1
         self.bought_totals[self.setup_side] -= 1
-        self.status = f"已撤回{item['name']}并退还 {item['cost']} 点资金。"
+        self.status = self.tr(
+            "status.removed",
+            piece=self.catalog_item_name(item),
+            cost=item["cost"],
+        )
 
     def finish_setup(self) -> None:
         self.selected_catalog_index = None
@@ -304,7 +330,7 @@ class HybridChessGame:
 
     # ---------- Battle logic ----------
 
-    def move_selected_piece(self, target: Position_grid) -> None:
+    def move_selected_piece(self, target: BoardPosition) -> None:
         piece = self.selected_piece
         if piece is None:
             return
@@ -318,50 +344,61 @@ class HybridChessGame:
 
         if captured is not None and captured.kind == "king":
             self.winner = piece.side
-            self.status = f"{self.side_name(piece.side)}吃掉了对方的将帅。"
+            self.status = self.tr(
+                "status.king_captured", side=self.side_name(piece.side)
+            )
             self.state = "game_over"
             return
 
         final_row = 0 if piece.side == "red" else BOARD_ROWS - 1
         if piece.game == "chess" and piece.kind == "pawn" and target[1] == final_row:
             self.pending_promotion = piece
-            self.status = "国际象棋兵到达底线，请选择升变棋子。"
+            self.status = self.tr("status.promote")
             return
         self.end_turn()
 
     def end_turn(self) -> None:
         self.turn = "black" if self.turn == "red" else "red"
-        self.status = f"轮到{self.side_name(self.turn)}行动。"
+        self.status = self.tr("status.turn", side=self.side_name(self.turn))
 
     # ---------- Lookup and coordinates ----------
 
-    def piece_at(self, position: Position_grid) -> Piece | None:
-        return next((piece for piece in self.pieces if piece.position == position), None)
+    def piece_at(self, position: BoardPosition) -> Piece | None:
+        return next(
+            (piece for piece in self.pieces if piece.position == position), None
+        )
 
     @staticmethod
-    def catalog_item_for(piece: Piece) -> dict:
+    def catalog_item_for(piece: Piece) -> CatalogItem:
         return next(
             item
             for item in PIECE_CATALOG
             if item["game"] == piece.game and item["kind"] == piece.kind
         )
 
-    @staticmethod
-    def side_name(side: Side) -> str:
-        return "红方" if side == "red" else "黑方"
+    def tr(self, key: str, **values: object) -> str:
+        return translate(self.language, key, **values)
 
-    @staticmethod
-    def describe_piece(piece: Piece) -> str:
-        game_name = "中国象棋" if piece.game == "xiangqi" else "国际象棋"
-        return f"{game_name}·{piece.label()}"
+    def side_name(self, side: Side) -> str:
+        return self.tr(f"side.{side}")
 
-    def board_to_pixel(self, position: Position_pixel) -> Position_pixel:
+    def catalog_item_name(self, item: CatalogItem) -> str:
+        game_name = self.tr(f"game.{item['game']}")
+        piece_name = self.tr(f"piece.{item['game']}.{item['kind']}")
+        return f"{game_name} · {piece_name}"
+
+    def describe_piece(self, piece: Piece) -> str:
+        game_name = self.tr(f"game.{piece.game}")
+        piece_name = self.tr(f"piece.{piece.game}.{piece.kind}")
+        return f"{game_name} · {piece_name}"
+
+    def board_to_pixel(self, position: BoardPosition) -> PixelPosition:
         return (
             BOARD_ORIGIN_X + position[0] * GRID_SIZE,
             BOARD_ORIGIN_Y + position[1] * GRID_SIZE,
         )
 
-    def mouse_to_board(self, position: Position_pixel) -> Position_pixel | None:
+    def mouse_to_board(self, position: PixelPosition) -> BoardPosition | None:
         raw_x = (position[0] - BOARD_ORIGIN_X) / GRID_SIZE
         raw_y = (position[1] - BOARD_ORIGIN_Y) / GRID_SIZE
         board_x, board_y = round(raw_x), round(raw_y)
@@ -376,7 +413,18 @@ class HybridChessGame:
 
     @staticmethod
     def menu_start_rect() -> pygame.Rect:
-        return pygame.Rect(WINDOW_WIDTH // 2 - 130, 515, 260, 64)
+        return pygame.Rect(WINDOW_WIDTH // 2 - 190, 515, 380, 64)
+
+    @staticmethod
+    def language_rects() -> dict[Language, pygame.Rect]:
+        languages: tuple[Language, ...] = ("zh", "en", "fr")
+        width, gap = 120, 12
+        total_width = len(languages) * width + (len(languages) - 1) * gap
+        start_x = (WINDOW_WIDTH - total_width) // 2
+        return {
+            language: pygame.Rect(start_x + index * (width + gap), 455, width, 42)
+            for index, language in enumerate(languages)
+        }
 
     @staticmethod
     def finish_setup_rect() -> pygame.Rect:
@@ -406,9 +454,11 @@ class HybridChessGame:
     @staticmethod
     def promotion_rects() -> dict[str, pygame.Rect]:
         kinds = ("queen", "rook", "bishop", "knight")
-        start_x = WINDOW_WIDTH // 2 - 230
+        item_width, gap = 125, 10
+        total_width = len(kinds) * item_width + (len(kinds) - 1) * gap
+        start_x = (WINDOW_WIDTH - total_width) // 2
         return {
-            kind: pygame.Rect(start_x + index * 120, 410, 100, 62)
+            kind: pygame.Rect(start_x + index * (item_width + gap), 410, item_width, 62)
             for index, kind in enumerate(kinds)
         }
 
@@ -442,34 +492,64 @@ class HybridChessGame:
             self.draw_game_over_modal()
 
     def draw_menu(self) -> None:
-        self.draw_text("融合棋局", self.fonts["title"], COLORS["text"], (640, 150), center=True)
         self.draw_text(
-            "中国象棋 × 国际象棋",
+            self.tr("menu.title"),
+            self.fonts["title"],
+            COLORS["text"],
+            (640, 150),
+            center=True,
+        )
+        self.draw_text(
+            self.tr("menu.subtitle"),
             self.fonts["subtitle"],
             COLORS["accent"],
             (640, 215),
             center=True,
         )
         cards = [
-            ("40", "点初始资金"),
-            ("2", "套棋子规则"),
-            ("1", "个需要守护的帅"),
+            ("40", self.tr("menu.budget")),
+            ("2", self.tr("menu.rulesets")),
+            ("1", self.tr("menu.king")),
         ]
         for index, (number, label) in enumerate(cards):
             rect = pygame.Rect(300 + index * 235, 300, 210, 130)
             pygame.draw.rect(self.screen, COLORS["panel"], rect, border_radius=14)
             pygame.draw.rect(self.screen, (215, 205, 187), rect, 2, border_radius=14)
-            self.draw_text(number, self.fonts["title"], COLORS["accent"], (rect.centerx, 338), center=True)
-            self.draw_text(label, self.fonts["small"], COLORS["muted"], (rect.centerx, 395), center=True)
-        self.draw_button(self.menu_start_rect(), "开始本地双人对局", active=True)
+            self.draw_text(
+                number,
+                self.fonts["title"],
+                COLORS["accent"],
+                (rect.centerx, 338),
+                center=True,
+            )
+            self.draw_text(
+                label,
+                self.fonts["small"],
+                COLORS["muted"],
+                (rect.centerx, 395),
+                center=True,
+            )
+        for language, rect in self.language_rects().items():
+            self.draw_button(
+                rect,
+                LANGUAGE_LABELS[language],
+                active=language == self.language,
+            )
+        self.draw_button(self.menu_start_rect(), self.tr("menu.start"), active=True)
         self.draw_text(
-            "双方秘密购买并部署不同棋子，率先吃掉对方将帅者获胜",
+            self.tr("menu.tagline"),
             self.fonts["small"],
             COLORS["muted"],
             (640, 630),
             center=True,
         )
-        self.draw_text("ESC 退出", self.fonts["tiny"], COLORS["muted"], (640, 720), center=True)
+        self.draw_text(
+            self.tr("menu.escape"),
+            self.fonts["tiny"],
+            COLORS["muted"],
+            (640, 720),
+            center=True,
+        )
 
     def draw_board(self, visible_side: Side | None) -> None:
         board_left = BOARD_ORIGIN_X - 42
@@ -478,13 +558,17 @@ class HybridChessGame:
         board_height = (BOARD_ROWS - 1) * GRID_SIZE + 84
         panel_rect = pygame.Rect(board_left, board_top, board_width, board_height)
         pygame.draw.rect(self.screen, COLORS["board"], panel_rect, border_radius=8)
-        pygame.draw.rect(self.screen, COLORS["board_dark"], panel_rect, 3, border_radius=8)
+        pygame.draw.rect(
+            self.screen, COLORS["board_dark"], panel_rect, 3, border_radius=8
+        )
 
         if self.state == "setup":
             rows = sorted(DEPLOYMENT_ROWS[self.setup_side])
             top_y = self.board_to_pixel((0, rows[0]))[1] - GRID_SIZE // 2
             height = (rows[-1] - rows[0] + 1) * GRID_SIZE
-            highlight = pygame.Surface(((BOARD_COLS - 1) * GRID_SIZE + 56, height), pygame.SRCALPHA)
+            highlight = pygame.Surface(
+                ((BOARD_COLS - 1) * GRID_SIZE + 56, height), pygame.SRCALPHA
+            )
             team_color = TEAM_COLORS[self.setup_side]
             highlight.fill((*team_color, 34))
             self.screen.blit(highlight, (BOARD_ORIGIN_X - 28, top_y))
@@ -535,8 +619,17 @@ class HybridChessGame:
                 2,
             )
 
-        self.draw_text("楚 河", self.fonts["subtitle"], line_color, (240, 398), center=True)
-        self.draw_text("漢 界", self.fonts["subtitle"], line_color, (465, 398), center=True, rotation=180)
+        self.draw_text(
+            "楚 河", self.fonts["subtitle"], line_color, (240, 398), center=True
+        )
+        self.draw_text(
+            "漢 界",
+            self.fonts["subtitle"],
+            line_color,
+            (465, 398),
+            center=True,
+            rotation=180,
+        )
 
         if self.selected_piece is not None and self.state == "playing":
             pygame.draw.circle(
@@ -554,54 +647,69 @@ class HybridChessGame:
             occupant = self.piece_at(target)
             color = COLORS["capture"] if occupant else COLORS["move"]
             radius = 30 if occupant else 9
-            pygame.draw.circle(self.screen, color, self.board_to_pixel(target), radius, 4 if occupant else 0)
+            pygame.draw.circle(
+                self.screen,
+                color,
+                self.board_to_pixel(target),
+                radius,
+                4 if occupant else 0,
+            )
 
-
-
-    # TODO: update draw_piece method
-    def draw_piece(self, piece: Piece, center: Position_pixel) -> None:
+    def draw_piece(self, piece: Piece, center: PixelPosition) -> None:
         team_color = TEAM_COLORS[piece.side]
-        # if piece.game == "xiangqi":
-        #     pygame.draw.circle(self.screen, (246, 229, 192), center, PIECE_RADIUS)
-        #     pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS, 3)
-        #     pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS - 5, 1)
-        #     self.draw_text(piece.label(), self.fonts["piece"], team_color, center, center=True)
-        # else:
-        image = self.images[piece.kind][piece.side]
-        image = pygame.transform.smoothscale(image, (48, 48))
-        self.screen.blit(image, image.get_rect(center=center))
-            # rect = pygame.Rect(0, 0, PIECE_RADIUS * 2, PIECE_RADIUS * 2)
-            # rect.center = center
-            # pygame.draw.rect(self.screen, team_color, rect, border_radius=8)
-            # pygame.draw.rect(self.screen, COLORS["white"], rect, 2, border_radius=8)
-            # self.draw_text(piece.label(), self.fonts["piece"], COLORS["white"], center, center=True)
-            # badge_center = (rect.left + 8, rect.top + 8)
-            # pygame.draw.circle(self.screen, COLORS["white"], badge_center, 6)
-            # pygame.draw.circle(self.screen, team_color, badge_center, 3)
+        image = self.images.get((piece.game, piece.kind, piece.side))
+        if image is not None:
+            scaled_image = pygame.transform.smoothscale(image, (48, 48))
+            self.screen.blit(scaled_image, scaled_image.get_rect(center=center))
+            return
+
+        pygame.draw.circle(self.screen, (246, 229, 192), center, PIECE_RADIUS)
+        pygame.draw.circle(self.screen, team_color, center, PIECE_RADIUS, 3)
+        self.draw_text(
+            piece.label(), self.fonts["piece"], team_color, center, center=True
+        )
 
     def draw_setup_sidebar(self) -> None:
         self.draw_sidebar_panel()
         side_color = TEAM_COLORS[self.setup_side]
         self.draw_text(
-            f"{self.side_name(self.setup_side)}秘密部署",
+            self.tr("setup.title", side=self.side_name(self.setup_side)),
             self.fonts["subtitle"],
             side_color,
             (SIDEBAR_X + 28, 64),
         )
         self.draw_text(
-            f"剩余资金  {self.budgets[self.setup_side]} / {STARTING_BUDGET}",
+            self.tr(
+                "setup.budget",
+                budget=self.budgets[self.setup_side],
+                total=STARTING_BUDGET,
+            ),
             self.fonts["body"],
             COLORS["text"],
             (SIDEBAR_X + 28, 112),
         )
         self.draw_text(
-            f"已购棋子  {self.bought_totals[self.setup_side]} / {MAX_BOUGHT_PIECES}",
+            self.tr(
+                "setup.count",
+                count=self.bought_totals[self.setup_side],
+                maximum=MAX_BOUGHT_PIECES,
+            ),
             self.fonts["small"],
             COLORS["muted"],
             (SIDEBAR_X + 290, 116),
         )
-        self.draw_text("选中商品后点击高亮交叉点；右键撤回并退款", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 158))
-        self.draw_text("棋子商店", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 188))
+        self.draw_text(
+            self.tr("setup.instructions"),
+            self.fonts["small"],
+            COLORS["muted"],
+            (SIDEBAR_X + 28, 158),
+        )
+        self.draw_text(
+            self.tr("setup.shop"),
+            self.fonts["body"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 188),
+        )
 
         for index, (item, rect) in enumerate(zip(PIECE_CATALOG, self.catalog_rects())):
             if item["kind"] == "king":
@@ -613,75 +721,135 @@ class HybridChessGame:
                 fill = (255, 239, 189)
             pygame.draw.rect(self.screen, fill, rect, border_radius=9)
             border = COLORS["selected"] if selected else (198, 191, 179)
-            pygame.draw.rect(self.screen, border, rect, 3 if selected else 1, border_radius=9)
+            pygame.draw.rect(
+                self.screen, border, rect, 3 if selected else 1, border_radius=9
+            )
             text_color = COLORS["text"] if active else COLORS["muted"]
-            # Change the text to image
-            # self.draw_text(item["name"], self.fonts["small"], text_color, (rect.x + 12, rect.y + 9))
-            piece_sample = Piece(None, item["game"], item["kind"], self.turn, None, None)
+            piece_sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
             self.draw_piece(piece_sample, (rect.x + 30, rect.y + 27))
             key = (self.setup_side, item["game"], item["kind"])
             count = self.purchase_counts.get(key, 0)
             self.draw_text(
-                f"{item['cost']}点   {count}/{item['limit']}",
+                self.tr(
+                    "setup.price",
+                    cost=item["cost"],
+                    count=count,
+                    limit=item["limit"],
+                ),
                 self.fonts["tiny"],
                 text_color,
                 (rect.x + 80, rect.y + 34),
             )
 
-        self.draw_text(self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 662))
-        self.draw_button(self.finish_setup_rect(), "确认阵容并交接", active=True)
+        self.draw_text(
+            self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 662)
+        )
+        self.draw_button(self.finish_setup_rect(), self.tr("setup.finish"), active=True)
 
     def draw_play_sidebar(self) -> None:
         self.draw_sidebar_panel()
-        self.draw_text("正式对局", self.fonts["subtitle"], COLORS["text"], (SIDEBAR_X + 28, 64))
+        self.draw_text(
+            self.tr("play.title"),
+            self.fonts["subtitle"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 64),
+        )
         turn_color = TEAM_COLORS[self.turn]
         self.draw_text(
-            f"当前回合：{self.side_name(self.turn)}",
+            self.tr("play.turn", side=self.side_name(self.turn)),
             self.fonts["button"],
             turn_color,
             (SIDEBAR_X + 28, 118),
         )
-        pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 165), (WINDOW_WIDTH - 38, 165), 2)
+        pygame.draw.line(
+            self.screen,
+            (210, 202, 188),
+            (SIDEBAR_X + 28, 165),
+            (WINDOW_WIDTH - 38, 165),
+            2,
+        )
         if self.is_checked(self.turn):
-            self.draw_text(self.side_name(self.turn) + "已被将军！", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 195))
-        # self.draw_text("棋子识别", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 195))
-        # self.draw_text("圆形汉字： 中国象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 235))
-        # self.draw_text("方形字母： 国际象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 270))
-        # self.draw_text("P兵  N马  B象  R车  Q后", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 305))
+            self.draw_text(
+                self.tr("play.checked", side=self.side_name(self.turn)),
+                self.fonts["body"],
+                COLORS["text"],
+                (SIDEBAR_X + 28, 195),
+            )
 
-        pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 350), (WINDOW_WIDTH - 38, 350), 2)
-        self.draw_text("本局规则", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 380))
+        pygame.draw.line(
+            self.screen,
+            (210, 202, 188),
+            (SIDEBAR_X + 28, 350),
+            (WINDOW_WIDTH - 38, 350),
+            2,
+        )
+        self.draw_text(
+            self.tr("play.rules"),
+            self.fonts["body"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 380),
+        )
         rules = (
-            "• 点击本方棋子，绿色点为移动，红圈为吃子",
-            "• 不判将军或将死，可直接吃掉对方将帅",
-            "• 国际象棋兵（pawn）到底线后可升变",
-            "• 中国象棋棋子保留蹩马腿、炮架等规则",
+            self.tr("play.rule.moves"),
+            self.tr("play.rule.king"),
+            self.tr("play.rule.promotion"),
+            self.tr("play.rule.xiangqi"),
         )
         for index, rule in enumerate(rules):
-            self.draw_text(rule, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 422 + index * 40))
+            self.draw_text(
+                rule,
+                self.fonts["small"],
+                COLORS["muted"],
+                (SIDEBAR_X + 28, 422 + index * 40),
+            )
 
-        pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 600), (WINDOW_WIDTH - 38, 600), 2)
-        self.draw_text("状态", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 630))
+        pygame.draw.line(
+            self.screen,
+            (210, 202, 188),
+            (SIDEBAR_X + 28, 600),
+            (WINDOW_WIDTH - 38, 600),
+            2,
+        )
+        self.draw_text(
+            self.tr("play.status"),
+            self.fonts["body"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 630),
+        )
 
-        self.draw_text(self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 672))
-        self.draw_text("ESC 返回主菜单", self.fonts["tiny"], COLORS["muted"], (SIDEBAR_X + 28, 735))
+        self.draw_text(
+            self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 672)
+        )
+        self.draw_text(
+            self.tr("play.escape"),
+            self.fonts["tiny"],
+            COLORS["muted"],
+            (SIDEBAR_X + 28, 735),
+        )
 
     def draw_handoff(self) -> None:
         self.screen.fill(COLORS["overlay"])
         if self.handoff_target == "black":
-            title = "红方部署完成"
-            body = "请红方离开屏幕，然后把电脑交给黑方。"
-            button = "我是黑方，开始部署"
-            self.turn = "black"
+            prefix = "handoff.red"
         else:
-            title = "双方部署完成"
-            body = "阵容将在下一步同时公开，红方首先行动。"
-            button = "公开阵容并开始"
-            self.turn = "red"
-        self.draw_text(title, self.fonts["title"], COLORS["white"], (640, 260), center=True)
-        self.draw_text(body, self.fonts["body"], (202, 207, 213), (640, 350), center=True)
+            prefix = "handoff.play"
+        title = self.tr(f"{prefix}.title")
+        body = self.tr(f"{prefix}.body")
+        button = self.tr(f"{prefix}.button")
+        self.draw_text(
+            title, self.fonts["title"], COLORS["white"], (640, 260), center=True
+        )
+        self.draw_text(
+            body, self.fonts["body"], (202, 207, 213), (640, 350), center=True
+        )
         self.draw_button(self.handoff_button_rect(), button, active=True)
-        self.draw_text("此页面不会显示上一位玩家的阵容", self.fonts["small"], (145, 151, 159), (640, 610), center=True)
+        self.draw_text(
+            self.tr("handoff.privacy"),
+            self.fonts["small"],
+            (145, 151, 159),
+            (640, 610),
+            center=True,
+        )
 
     def draw_promotion_modal(self) -> None:
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
@@ -689,10 +857,15 @@ class HybridChessGame:
         self.screen.blit(overlay, (0, 0))
         modal = pygame.Rect(WINDOW_WIDTH // 2 - 290, 285, 580, 245)
         pygame.draw.rect(self.screen, COLORS["panel"], modal, border_radius=16)
-        self.draw_text("兵已到达底线：选择升变", self.fonts["subtitle"], COLORS["text"], (640, 338), center=True)
-        names = {"queen": "Q 后", "rook": "R 车", "bishop": "B 象", "knight": "N 马"}
+        self.draw_text(
+            self.tr("promotion.title"),
+            self.fonts["subtitle"],
+            COLORS["text"],
+            (640, 338),
+            center=True,
+        )
         for kind, rect in self.promotion_rects().items():
-            self.draw_button(rect, names[kind], active=True)
+            self.draw_button(rect, self.tr(f"promotion.{kind}"), active=True)
 
     def draw_game_over_modal(self) -> None:
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
@@ -701,12 +874,30 @@ class HybridChessGame:
         modal = pygame.Rect(WINDOW_WIDTH // 2 - 320, 245, 640, 365)
         pygame.draw.rect(self.screen, COLORS["panel"], modal, border_radius=18)
         winner = self.side_name(self.winner or "red")
-        self.draw_text("对局结束", self.fonts["subtitle"], COLORS["muted"], (640, 310), center=True)
-        self.draw_text(f"{winner}获胜！", self.fonts["title"], TEAM_COLORS[self.winner or "red"], (640, 385), center=True)
-        self.draw_text("成功吃掉了对方的将帅", self.fonts["body"], COLORS["text"], (640, 445), center=True)
+        self.draw_text(
+            self.tr("game_over.title"),
+            self.fonts["subtitle"],
+            COLORS["muted"],
+            (640, 310),
+            center=True,
+        )
+        self.draw_text(
+            self.tr("game_over.winner", side=winner),
+            self.fonts["title"],
+            TEAM_COLORS[self.winner or "red"],
+            (640, 385),
+            center=True,
+        )
+        self.draw_text(
+            self.tr("game_over.reason"),
+            self.fonts["body"],
+            COLORS["text"],
+            (640, 445),
+            center=True,
+        )
         restart, menu = self.game_over_rects()
-        self.draw_button(restart, "重新开局", active=True)
-        self.draw_button(menu, "返回菜单", active=False)
+        self.draw_button(restart, self.tr("game_over.restart"), active=True)
+        self.draw_button(menu, self.tr("game_over.menu"), active=False)
 
     def draw_sidebar_panel(self) -> None:
         rect = pygame.Rect(SIDEBAR_X, 28, SIDEBAR_WIDTH, WINDOW_HEIGHT - 56)
@@ -722,21 +913,23 @@ class HybridChessGame:
             color = (224, 219, 210)
             text_color = COLORS["text"]
         pygame.draw.rect(self.screen, color, rect, border_radius=10)
-        self.draw_text(label, self.fonts["button"], text_color, rect.center, center=True)
+        self.draw_text(
+            label, self.fonts["button"], text_color, rect.center, center=True
+        )
 
     def draw_text(
         self,
         text: str,
         font: pygame.font.Font,
         color: tuple[int, int, int],
-        position: Position_pixel,
+        position: PixelPosition,
         *,
         center: bool = False,
-        rotation: int = False
+        rotation: int = 0,
     ) -> None:
         surface = font.render(text, True, color)
-        # Text rotation
-        surface = pygame.transform.rotate(surface, rotation)
+        if rotation:
+            surface = pygame.transform.rotate(surface, rotation)
         rect = surface.get_rect()
         if center:
             rect.center = position
@@ -752,4 +945,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

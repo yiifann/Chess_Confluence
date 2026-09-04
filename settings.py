@@ -1,5 +1,19 @@
 """Shared configuration for the Hybrid Chess demo."""
 
+from typing import Literal, TypedDict
+
+Game = Literal["chess", "xiangqi"]
+Side = Literal["red", "black"]
+
+
+class CatalogItem(TypedDict):
+    game: Game
+    kind: str
+    cost: int
+    limit: int
+    images: dict[Side, str]
+
+
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
 FPS = 60
@@ -45,150 +59,89 @@ COLORS = {
     "overlay": (24, 27, 31),
 }
 
-PIECE_CATALOG = [
+PIECE_CATALOG: list[CatalogItem] = [
     {
         "game": "xiangqi",
         "kind": "bing",
-        "name": "中象·兵/卒",
-        "short": "兵",
         "cost": 1,
         "limit": 5,
-        "images": {
-            "red": "Xiangqi_sl1.svg",
-            "black": "Xiangqi_sd1.svg"
-        }
+        "images": {"red": "Xiangqi_sl1.svg", "black": "Xiangqi_sd1.svg"},
     },
     {
         "game": "xiangqi",
         "kind": "advisor",
-        "name": "中象·仕/士",
-        "short": "仕",
         "cost": 2,
         "limit": 2,
-        "images": {
-            "red": "Xiangqi_al1.svg",
-            "black": "Xiangqi_ad1.svg"
-        }
+        "images": {"red": "Xiangqi_al1.svg", "black": "Xiangqi_ad1.svg"},
     },
     {
         "game": "xiangqi",
         "kind": "elephant",
-        "name": "中象·相/象",
-        "short": "相",
         "cost": 2,
         "limit": 2,
-        "images": {
-            "red": "Xiangqi_el1.svg",
-            "black": "Xiangqi_ed1.svg"
-        }
+        "images": {"red": "Xiangqi_el1.svg", "black": "Xiangqi_ed1.svg"},
     },
     {
         "game": "xiangqi",
         "kind": "horse",
-        "name": "中象·马",
-        "short": "马",
         "cost": 3,
         "limit": 2,
-        "images": {
-            "red": "Xiangqi_hl1.svg",
-            "black": "Xiangqi_hd1.svg"
-        }
+        "images": {"red": "Xiangqi_hl1.svg", "black": "Xiangqi_hd1.svg"},
     },
     {
         "game": "xiangqi",
         "kind": "cannon",
-        "name": "中象·炮",
-        "short": "炮",
         "cost": 4,
         "limit": 2,
-        "images": {
-            "red": "Xiangqi_cl1.svg",
-            "black": "Xiangqi_cd1.svg"
-        }
+        "images": {"red": "Xiangqi_cl1.svg", "black": "Xiangqi_cd1.svg"},
     },
     {
         "game": "xiangqi",
         "kind": "rook",
-        "name": "中象·车",
-        "short": "车",
         "cost": 5,
         "limit": 2,
-        "images": {
-            "red": "Xiangqi_rl1.svg",
-            "black": "Xiangqi_rd1.svg"
-        }
+        "images": {"red": "Xiangqi_rl1.svg", "black": "Xiangqi_rd1.svg"},
     },
     {
         "game": "chess",
         "kind": "pawn",
-        "name": "国象·兵",
-        "short": "P",
         "cost": 1,
         "limit": 8,
-        "images": {
-            "red": "Chess_plt60.png",
-            "black": "Chess_pdt60.png"
-        }
+        "images": {"red": "Chess_plt60.png", "black": "Chess_pdt60.png"},
     },
     {
         "game": "chess",
         "kind": "knight",
-        "name": "国象·马",
-        "short": "N",
         "cost": 3,
         "limit": 2,
-        "images": {
-            "red": "Chess_nlt60.png",
-            "black": "Chess_ndt60.png"
-        }
+        "images": {"red": "Chess_nlt60.png", "black": "Chess_ndt60.png"},
     },
     {
         "game": "chess",
         "kind": "bishop",
-        "name": "国象·象",
-        "short": "B",
         "cost": 3,
         "limit": 2,
-        "images": {
-            "red": "Chess_blt60.png",
-            "black": "Chess_bdt60.png"
-        }
+        "images": {"red": "Chess_blt60.png", "black": "Chess_bdt60.png"},
     },
     {
         "game": "chess",
         "kind": "rook",
-        "name": "国象·车",
-        "short": "R",
         "cost": 5,
         "limit": 2,
-        "images": {
-            "red": "Chess_rlt60.png",
-            "black": "Chess_rdt60.png"
-        }
+        "images": {"red": "Chess_rlt60.png", "black": "Chess_rdt60.png"},
     },
     {
         "game": "chess",
         "kind": "queen",
-        "name": "国象·后",
-        "short": "Q",
         "cost": 9,
         "limit": 1,
-        "images": {
-            "red": "Chess_qlt60.png",
-            "black": "Chess_qdt60.png"
-        }
+        "images": {"red": "Chess_qlt60.png", "black": "Chess_qdt60.png"},
     },
     {
-            "game": "xiangqi",
-            "kind": "king",
-            "name": "中象·将/帅",
-            "short": "帅",
-            "cost": 99,
-            "limit": 0,
-            "images": {
-                "red": "Xiangqi_gl1.svg",
-                "black": "Xiangqi_gd1.svg"
-            }
+        "game": "xiangqi",
+        "kind": "king",
+        "cost": 99,
+        "limit": 0,
+        "images": {"red": "Xiangqi_gl1.svg", "black": "Xiangqi_gd1.svg"},
     },
 ]
-
