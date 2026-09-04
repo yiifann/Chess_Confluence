@@ -12,7 +12,8 @@ except ImportError:  # Friendly message when launched before dependencies exist.
     print("缺少 pygame。请先运行：python -m pip install -r requirements.txt")
     raise SystemExit(1)
 
-from pieces import Piece, Position_grid, legal_moves
+from pieces import Piece, legal_moves
+from pieces import Position_grid, Game, Side
 from settings import (
     BOARD_COLS,
     BOARD_ORIGIN_X,
@@ -87,13 +88,22 @@ class HybridChessGame:
                 self.images[piece["kind"]]["black"] = pygame.image.load(Path(__file__).parent / "assets" / piece["images"]["black"]).convert_alpha()
             except:
                 pass
-                
+
+    def is_checked(self, side : Side) -> bool:
+        for piece in self.pieces: 
+            if self.kings[side].position in legal_moves(piece=piece, pieces=self.pieces):
+                return True
+        return False
 
     def reset_match(self) -> None:
         self.pieces: list[Piece] = [
             Piece(1, "xiangqi", "king", "red", (4, 9)),
             Piece(2, "xiangqi", "king", "black", (4, 0)),
         ]
+        self.kings: dict[Side : Piece] = {
+            "red": self.pieces[0],
+            "black": self.pieces[1]
+        }
         self.next_piece_id = 3
         self.budgets = {"red": STARTING_BUDGET, "black": STARTING_BUDGET}
         self.purchase_counts: dict[tuple[str, str, str], int] = {}
@@ -103,10 +113,10 @@ class HybridChessGame:
         self.selected_piece: Piece | None = None
         self.available_moves: list[Position_grid] = []
         self.turn = "red"
-        self.winner: str | None = None
+        self.winner: Side | None = None
         self.pending_promotion: Piece | None = None
         self.handoff_target = "black"
-        self.status = "红方请选择棋子并在己方后三行部署。"
+        self.status = "红方请选择棋子并在己方后四行部署。"
 
     # ---------- Main loop and events ----------
 
@@ -337,7 +347,7 @@ class HybridChessGame:
         )
 
     @staticmethod
-    def side_name(side: str) -> str:
+    def side_name(side: Side) -> str:
         return "红方" if side == "red" else "黑方"
 
     @staticmethod
@@ -461,7 +471,7 @@ class HybridChessGame:
         )
         self.draw_text("ESC 退出", self.fonts["tiny"], COLORS["muted"], (640, 720), center=True)
 
-    def draw_board(self, visible_side: str | None) -> None:
+    def draw_board(self, visible_side: Side | None) -> None:
         board_left = BOARD_ORIGIN_X - 42
         board_top = BOARD_ORIGIN_Y - 42
         board_width = (BOARD_COLS - 1) * GRID_SIZE + 84
@@ -525,8 +535,8 @@ class HybridChessGame:
                 2,
             )
 
-        self.draw_text("楚 河", self.fonts["body"], line_color, (240, 398), center=True)
-        self.draw_text("汉 界", self.fonts["body"], line_color, (465, 398), center=True)
+        self.draw_text("楚 河", self.fonts["subtitle"], line_color, (240, 398), center=True)
+        self.draw_text("漢 界", self.fonts["subtitle"], line_color, (465, 398), center=True, rotation=180)
 
         if self.selected_piece is not None and self.state == "playing":
             pygame.draw.circle(
@@ -536,15 +546,17 @@ class HybridChessGame:
                 PIECE_RADIUS + 7,
                 5,
             )
-        for target in self.available_moves:
-            occupant = self.piece_at(target)
-            color = COLORS["capture"] if occupant else COLORS["move"]
-            radius = 14 if occupant else 9
-            pygame.draw.circle(self.screen, color, self.board_to_pixel(target), radius, 4 if occupant else 0)
-
         for piece in self.pieces:
             if visible_side is None or piece.side == visible_side:
                 self.draw_piece(piece, self.board_to_pixel(piece.position))
+
+        for target in self.available_moves:
+            occupant = self.piece_at(target)
+            color = COLORS["capture"] if occupant else COLORS["move"]
+            radius = 30 if occupant else 9
+            pygame.draw.circle(self.screen, color, self.board_to_pixel(target), radius, 4 if occupant else 0)
+
+
 
     # TODO: update draw_piece method
     def draw_piece(self, piece: Piece, center: Position_pixel) -> None:
@@ -627,18 +639,19 @@ class HybridChessGame:
             (SIDEBAR_X + 28, 118),
         )
         pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 165), (WINDOW_WIDTH - 38, 165), 2)
-
-        self.draw_text("棋子识别", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 195))
-        self.draw_text("圆形汉字： 中国象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 235))
-        self.draw_text("方形字母： 国际象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 270))
-        self.draw_text("P兵  N马  B象  R车  Q后", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 305))
+        if self.is_checked(self.turn):
+            self.draw_text(self.side_name(self.turn) + "已被将军！", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 195))
+        # self.draw_text("棋子识别", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 195))
+        # self.draw_text("圆形汉字： 中国象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 235))
+        # self.draw_text("方形字母： 国际象棋棋子", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 270))
+        # self.draw_text("P兵  N马  B象  R车  Q后", self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 305))
 
         pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 350), (WINDOW_WIDTH - 38, 350), 2)
         self.draw_text("本局规则", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 380))
         rules = (
             "• 点击本方棋子，绿色点为移动，红圈为吃子",
             "• 不判将军或将死，可直接吃掉对方将帅",
-            "• 国际象棋兵到底线后可升变",
+            "• 国际象棋兵（pawn）到底线后可升变",
             "• 中国象棋棋子保留蹩马腿、炮架等规则",
         )
         for index, rule in enumerate(rules):
@@ -646,6 +659,7 @@ class HybridChessGame:
 
         pygame.draw.line(self.screen, (210, 202, 188), (SIDEBAR_X + 28, 600), (WINDOW_WIDTH - 38, 600), 2)
         self.draw_text("状态", self.fonts["body"], COLORS["text"], (SIDEBAR_X + 28, 630))
+
         self.draw_text(self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 672))
         self.draw_text("ESC 返回主菜单", self.fonts["tiny"], COLORS["muted"], (SIDEBAR_X + 28, 735))
 
@@ -715,8 +729,11 @@ class HybridChessGame:
         position: Position_pixel,
         *,
         center: bool = False,
+        rotation: int = False
     ) -> None:
         surface = font.render(text, True, color)
+        # Text rotation
+        surface = pygame.transform.rotate(surface, rotation)
         rect = surface.get_rect()
         if center:
             rect.center = position

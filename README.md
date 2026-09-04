@@ -29,7 +29,7 @@ python -m pip install -r requirements.txt
 
 ```bash
 conda activate chess_confluence_env
-cd Desktop/chess_confluence
+cd chess_confluence
 python main.py
 ```
 

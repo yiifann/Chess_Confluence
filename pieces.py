@@ -7,24 +7,26 @@ from dataclasses import dataclass
 from typing import Literal, Iterable
 
 Position_grid = tuple[int, int]
+Game = Literal["chess", "xiangqi", "other"]
+Side = Literal["red", "black"]
 
 red_labels = {
-    "king": "帅",
+    "king": "帥",
     "advisor": "仕",
     "elephant": "相",
-    "horse": "马",
-    "rook": "车",
+    "horse": "馬",
+    "rook": "車",
     "cannon": "炮",
     "pawn": "兵",
 }
 
 black_labels = {
-    "king": "将",
+    "king": "將",
     "advisor": "士",
     "elephant": "象",
-    "horse": "马",
-    "rook": "车",
-    "cannon": "炮",
+    "horse": "馬",
+    "rook": "車",
+    "cannon": "砲",
     "pawn": "卒",
 }
 
@@ -34,12 +36,10 @@ black_labels = {
 @dataclass
 class Piece:
     piece_id: int
-    game: Literal["chess", "xiangqi", "other"]
+    game: Game
     kind: str
-    side: Literal["red", "black"]
+    side: Side
     position: Position_grid
-    # promotion: bool
-    # movement: 
     moved: bool = False
 
     @property
@@ -49,11 +49,11 @@ class Piece:
     def label(self) -> str:
         if self.game == "chess":
             return {
-                "pawn": "P",
-                "knight": "N",
-                "bishop": "B",
-                "rook": "R",
-                "queen": "Q",
+                "pawn": "Pawn",
+                "knight": "Knight",
+                "bishop": "Bishop",
+                "rook": "Rook",
+                "queen": "Queen",
             }[self.kind]
 
         return (red_labels if self.side == "red" else black_labels)[self.kind]
