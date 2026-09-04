@@ -19,8 +19,8 @@ MAX_BOUGHT_PIECES = 20
 
 # Deployment zones are expressed as board row indices.
 DEPLOYMENT_ROWS = {
-    "red": {7, 8, 9},
-    "black": {0, 1, 2},
+    "red": {6, 7, 8, 9},
+    "black": {0, 1, 2, 3},
 }
 
 TEAM_COLORS = {
@@ -53,6 +53,10 @@ PIECE_CATALOG = [
         "short": "兵",
         "cost": 1,
         "limit": 5,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "xiangqi",
@@ -61,6 +65,10 @@ PIECE_CATALOG = [
         "short": "仕",
         "cost": 2,
         "limit": 2,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "xiangqi",
@@ -69,6 +77,10 @@ PIECE_CATALOG = [
         "short": "相",
         "cost": 2,
         "limit": 2,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "xiangqi",
@@ -77,6 +89,10 @@ PIECE_CATALOG = [
         "short": "马",
         "cost": 3,
         "limit": 2,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "xiangqi",
@@ -85,6 +101,10 @@ PIECE_CATALOG = [
         "short": "炮",
         "cost": 4,
         "limit": 2,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "xiangqi",
@@ -93,6 +113,10 @@ PIECE_CATALOG = [
         "short": "车",
         "cost": 5,
         "limit": 2,
+        "images": {
+            "red": "",
+            "black": ""
+        }
     },
     {
         "game": "chess",
@@ -101,6 +125,10 @@ PIECE_CATALOG = [
         "short": "P",
         "cost": 1,
         "limit": 8,
+        "images": {
+            "red": "Chess_plt60.png",
+            "black": "Chess_pdt60.png"
+        }
     },
     {
         "game": "chess",
@@ -109,6 +137,10 @@ PIECE_CATALOG = [
         "short": "N",
         "cost": 3,
         "limit": 2,
+        "images": {
+            "red": "Chess_nlt60.png",
+            "black": "Chess_ndt60.png"
+        }
     },
     {
         "game": "chess",
@@ -117,6 +149,10 @@ PIECE_CATALOG = [
         "short": "B",
         "cost": 3,
         "limit": 2,
+        "images": {
+            "red": "Chess_blt60.png",
+            "black": "Chess_bdt60.png"
+        }
     },
     {
         "game": "chess",
@@ -125,6 +161,10 @@ PIECE_CATALOG = [
         "short": "R",
         "cost": 5,
         "limit": 2,
+        "images": {
+            "red": "Chess_rlt60.png",
+            "black": "Chess_rdt60.png"
+        }
     },
     {
         "game": "chess",
@@ -133,6 +173,10 @@ PIECE_CATALOG = [
         "short": "Q",
         "cost": 9,
         "limit": 1,
+        "images": {
+            "red": "Chess_qlt60.png",
+            "black": "Chess_qdt60.png"
+        }
     },
 ]
 

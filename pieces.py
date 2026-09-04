@@ -2,21 +2,44 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
-
 from settings import BOARD_COLS, BOARD_ROWS
+from dataclasses import dataclass
+from typing import Literal, Iterable
 
-Position = tuple[int, int]
+Position_grid = tuple[int, int]
 
+red_labels = {
+    "king": "帅",
+    "advisor": "仕",
+    "elephant": "相",
+    "horse": "马",
+    "rook": "车",
+    "cannon": "炮",
+    "pawn": "兵",
+}
+
+black_labels = {
+    "king": "将",
+    "advisor": "士",
+    "elephant": "象",
+    "horse": "马",
+    "rook": "车",
+    "cannon": "炮",
+    "pawn": "卒",
+}
+
+# piece_id: unit identifier for the piece (not being used)
+# game: either 
 
 @dataclass
 class Piece:
     piece_id: int
-    game: str
+    game: Literal["chess", "xiangqi", "other"]
     kind: str
-    side: str
-    position: Position
+    side: Literal["red", "black"]
+    position: Position_grid
+    # promotion: bool
+    # movement: 
     moved: bool = False
 
     @property
@@ -33,37 +56,19 @@ class Piece:
                 "queen": "Q",
             }[self.kind]
 
-        red_labels = {
-            "king": "帅",
-            "advisor": "仕",
-            "elephant": "相",
-            "horse": "马",
-            "rook": "车",
-            "cannon": "炮",
-            "pawn": "兵",
-        }
-        black_labels = {
-            "king": "将",
-            "advisor": "士",
-            "elephant": "象",
-            "horse": "马",
-            "rook": "车",
-            "cannon": "炮",
-            "pawn": "卒",
-        }
         return (red_labels if self.side == "red" else black_labels)[self.kind]
 
 
-def inside(position: Position) -> bool:
+def inside(position: Position_grid) -> bool:
     x, y = position
     return 0 <= x < BOARD_COLS and 0 <= y < BOARD_ROWS
 
 
-def occupancy(pieces: Iterable[Piece]) -> dict[Position, Piece]:
+def occupancy(pieces: Iterable[Piece]) -> dict[Position_grid, Piece]:
     return {piece.position: piece for piece in pieces}
 
 
-def legal_moves(piece: Piece, pieces: Iterable[Piece]) -> list[Position]:
+def legal_moves(piece: Piece, pieces: Iterable[Piece]) -> list[Position_grid]:
     """Return geometric legal moves.
 
     This demo intentionally uses king capture instead of check/checkmate, so a
@@ -75,7 +80,7 @@ def legal_moves(piece: Piece, pieces: Iterable[Piece]) -> list[Position]:
     return _chess_moves(piece, board)
 
 
-def _can_land(piece: Piece, position: Position, board: dict[Position, Piece]) -> bool:
+def _can_land(piece: Piece, position: Position_grid, board: dict[Position_grid, Piece]) -> bool:
     return inside(position) and (
         position not in board or board[position].side != piece.side
     )
@@ -83,10 +88,10 @@ def _can_land(piece: Piece, position: Position, board: dict[Position, Piece]) ->
 
 def _sliding_moves(
     piece: Piece,
-    board: dict[Position, Piece],
-    directions: Iterable[Position],
-) -> list[Position]:
-    moves: list[Position] = []
+    board: dict[Position_grid, Piece],
+    directions: Iterable[Position_grid],
+) -> list[Position_grid]:
+    moves: list[Position_grid] = []
     x, y = piece.position
     for dx, dy in directions:
         step = 1
@@ -105,14 +110,14 @@ def _sliding_moves(
     return moves
 
 
-def _xiangqi_moves(piece: Piece, board: dict[Position, Piece]) -> list[Position]:
+def _xiangqi_moves(piece: Piece, board: dict[Position_grid, Piece]) -> list[Position_grid]:
     x, y = piece.position
 
     if piece.kind == "rook":
         return _sliding_moves(piece, board, ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
     if piece.kind == "cannon":
-        moves: list[Position] = []
+        moves: list[Position_grid] = []
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             step = 1
             screen_found = False
@@ -192,7 +197,7 @@ def _xiangqi_moves(piece: Piece, board: dict[Position, Piece]) -> list[Position]
     return []
 
 
-def _chess_moves(piece: Piece, board: dict[Position, Piece]) -> list[Position]:
+def _chess_moves(piece: Piece, board: dict[Position_grid, Piece]) -> list[Position_grid]:
     x, y = piece.position
 
     if piece.kind == "rook":
@@ -230,7 +235,7 @@ def _chess_moves(piece: Piece, board: dict[Position, Piece]) -> list[Position]:
             if _can_land(piece, target := (x + dx, y + dy), board)
         ]
     if piece.kind == "pawn":
-        moves: list[Position] = []
+        moves: list[Position_grid] = []
         forward = -1 if piece.side == "red" else 1
         one_step = (x, y + forward)
         if inside(one_step) and one_step not in board:
