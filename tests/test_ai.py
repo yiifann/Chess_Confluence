@@ -1,9 +1,11 @@
 """Tests for the renderer-independent AI policy contract."""
 
 from collections import Counter
+from dataclasses import replace
 
 from ai import (
     CatalogOption,
+    Difficulty,
     GameObservation,
     HeuristicPolicy,
     SetupRequest,
@@ -104,3 +106,56 @@ def test_heuristic_ai_promotes_to_queen() -> None:
     )
 
     assert choice == "queen"
+
+
+def test_seeded_ai_setup_is_reproducible_at_every_difficulty() -> None:
+    request = SetupRequest(
+        side="black",
+        budget_units=STARTING_BUDGET_UNITS,
+        max_pieces=MAX_BOUGHT_PIECES,
+        catalog=tuple(
+            CatalogOption(item.game, item.kind, item.cost_units, item.limit)
+            for item in PIECE_DEFINITIONS
+            if item.limit
+        ),
+        deployment_rows=tuple(sorted(DEPLOYMENT_ROWS["black"])),
+        occupied=(),
+        chess_king_cost_units=CHESS_KING_COST_UNITS,
+        board_columns=BOARD_COLS,
+        board_rows=BOARD_ROWS,
+    )
+
+    for difficulty in ("easy", "medium", "hard"):
+        typed_difficulty: Difficulty = difficulty
+        first = HeuristicPolicy(seed=1234, difficulty=typed_difficulty)
+        second = HeuristicPolicy(seed=1234, difficulty=typed_difficulty)
+        assert first.choose_setup(request) == second.choose_setup(request)
+
+
+def test_ai_can_build_the_red_army_when_human_chooses_black() -> None:
+    black_request = SetupRequest(
+        side="black",
+        budget_units=STARTING_BUDGET_UNITS,
+        max_pieces=MAX_BOUGHT_PIECES,
+        catalog=tuple(
+            CatalogOption(item.game, item.kind, item.cost_units, item.limit)
+            for item in PIECE_DEFINITIONS
+            if item.limit
+        ),
+        deployment_rows=tuple(sorted(DEPLOYMENT_ROWS["black"])),
+        occupied=(),
+        chess_king_cost_units=CHESS_KING_COST_UNITS,
+        board_columns=BOARD_COLS,
+        board_rows=BOARD_ROWS,
+    )
+    red_request = replace(
+        black_request,
+        side="red",
+        deployment_rows=tuple(sorted(DEPLOYMENT_ROWS["red"])),
+    )
+
+    plan = HeuristicPolicy(seed=9, difficulty="hard").choose_setup(red_request)
+
+    king = Piece(1, plan.king_game, "king", "red", plan.king_position)
+    assert valid_king_setup_position(king, plan.king_position)
+    assert all(item.position[1] in DEPLOYMENT_ROWS["red"] for item in plan.placements)

@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pieces import BoardPosition, Game, Piece, Side, legal_moves
 from settings import PIECE_DEFINITION_BY_KEY
+
+Difficulty = Literal["easy", "medium", "hard"]
 
 
 @dataclass(frozen=True)
@@ -155,16 +157,25 @@ def enumerate_legal_actions(
 
 
 class HeuristicPolicy:
-    """Small, fast opponent using setup priorities and one-ply move scoring."""
+    """Configurable opponent ranging from random play to defensive one-ply play."""
 
-    def __init__(self, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        difficulty: Difficulty = "medium",
+        setup_seed: int | None = None,
+    ) -> None:
+        if difficulty not in ("easy", "medium", "hard"):
+            raise ValueError(f"unsupported AI difficulty: {difficulty}")
         self.random = random.Random(seed)
+        self.setup_random = random.Random(seed if setup_seed is None else setup_seed)
+        self.difficulty = difficulty
 
     def choose_setup(self, request: SetupRequest) -> SetupPlan:
         """Build a varied, budget-aware army and place it by tactical role."""
         use_chess_king = (
             request.budget_units >= request.chess_king_cost_units
-            and self.random.random() < 0.3
+            and self.setup_random.random() < 0.3
         )
         king_game: Game = "chess" if use_chess_king else "xiangqi"
         remaining_units = request.budget_units - (
@@ -191,7 +202,7 @@ class HeuristicPolicy:
             ("xiangqi", "elephant"),
             ("xiangqi", "advisor"),
         ]
-        if self.random.random() < 0.2:
+        if self.setup_random.random() < 0.2:
             priorities.remove(("chess", "queen"))
 
         selected: list[CatalogOption] = []
@@ -249,8 +260,17 @@ class HeuristicPolicy:
         """Return the highest-scoring legal move, randomizing exact ties."""
         if not legal_actions:
             return None
+        if self.difficulty == "easy":
+            return self.random.choice(legal_actions)
         scored = [
-            (self._score_action(observation, action), action)
+            (
+                self._score_action(
+                    observation,
+                    action,
+                    consider_replies=self.difficulty == "hard",
+                ),
+                action,
+            )
             for action in legal_actions
         ]
         best_score = max(score for score, _ in scored)
@@ -300,7 +320,7 @@ class HeuristicPolicy:
             key=lambda position: (
                 abs(position[1] - back_row),
                 abs(position[0] - (request.board_columns - 1) / 2),
-                self.random.random(),
+                self.setup_random.random(),
             ),
         )
 
@@ -340,7 +360,7 @@ class HeuristicPolicy:
             key=lambda position: (
                 abs(position[1] - preferred_row),
                 abs(position[0] - (request.board_columns - 1) / 2),
-                self.random.random(),
+                self.setup_random.random(),
             ),
         )
 
@@ -348,8 +368,10 @@ class HeuristicPolicy:
         self,
         observation: GameObservation,
         action: MoveAction,
+        *,
+        consider_replies: bool,
     ) -> float:
-        """Evaluate immediate tactics and the opponent's one-ply replies."""
+        """Evaluate immediate tactics and, on hard, opposing one-ply replies."""
         pieces = _materialize(observation)
         moving_piece = next(
             piece for piece in pieces if piece.piece_id == action.piece_id
@@ -388,6 +410,9 @@ class HeuristicPolicy:
             and moving_piece.position[1] == final_row
         ):
             score += 8
+
+        if not consider_replies:
+            return score
 
         own_king = next(
             piece

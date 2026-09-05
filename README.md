@@ -89,7 +89,7 @@ python main.py
 - 允许走入受攻击位置；胜负仍以实际吃掉将/帅为准。
 - 当前行动方没有任何合法走法时判负，该规则同时适用于单人和双人模式。
 - 同一局面第三次出现，或连续 100 个半回合没有吃子及兵/卒移动时，判为和棋。
-- 内置简单电脑 AI；暂不支持联网、音效和存档。
+- 内置可调难度电脑 AI，并支持 JSON 存档、撤销与回放；暂不支持联网和音效。
 
 ### 国际象棋
 
@@ -106,10 +106,11 @@ python main.py
 
 ## Single-player AI
 
-The main menu supports either a single-player game against the built-in simple
-AI or the original local two-player mode. In single-player mode, the human uses
-Red. The AI secretly buys and deploys Black's army, then moves after a short
-on-screen thinking delay.
+The main menu supports either a single-player game against the built-in AI or
+the original local two-player mode. In single-player mode, the player can choose
+Red or Black, Easy/Medium/Hard difficulty, deterministic or varied AI setup,
+and whether the initial armies may be inspected after the match. The game-over
+screen supports rematches with the same armies or a newly generated AI army.
 
 AI implementations use the renderer-independent `GamePolicy` protocol in
 `ai.py`. A future reinforcement-learning adapter only needs to implement:
@@ -145,6 +146,7 @@ The code is split by responsibility:
 - `engine.py`: authoritative match state, setup validation, actions, and results.
 - `pieces.py`: board model and movement rules, with no Pygame dependency.
 - `ai.py`: AI contract, snapshots/actions, and the built-in heuristic policy.
+- `match_history.py`: JSON records plus validated replay and undo support.
 - `settings.py`: board constants, integer half-point prices, limits, colors, and
   assets. One internal cost unit equals 0.5 displayed points.
 - `i18n.py`: Chinese, English, and French message catalogs.
@@ -153,14 +155,19 @@ The code is split by responsibility:
 See [docs/RULES.md](docs/RULES.md) for exact variant and terminal rules. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for state flow, invariants,
 extension instructions, and an RL-policy adapter example.
+[docs/MATCH_RECORDS.md](docs/MATCH_RECORDS.md) documents the JSON format,
+save/load API, and replay validation.
+
+GitHub Actions runs linting, formatting, type checking, tests, and a headless
+application import on Python 3.10 and 3.13 for every push and pull request.
 
 Run the automated checks from the project root:
 
 ```bash
 python -m pip install pytest ruff mypy
 python -m pytest -q -p no:cacheprovider
-ruff check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
-ruff format --check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
-python -m mypy main.py engine.py ai.py pieces.py settings.py i18n.py tests \
+ruff check --no-cache main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests
+ruff format --check --no-cache main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests
+python -m mypy main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests \
   --ignore-missing-imports --cache-dir=NUL --no-error-summary
 ```

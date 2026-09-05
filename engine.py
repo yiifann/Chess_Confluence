@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
+from match_history import (
+    ActionRecord,
+    MatchRecord,
+    MatchRecordError,
+    MetadataValue,
+    ResultRecord,
+    SetupPieceRecord,
+)
 from pieces import (
     BoardPosition,
     Game,
@@ -118,10 +126,12 @@ class GameEngine:
 
     def __init__(self) -> None:
         self.state = GameState.fresh()
+        self.record = MatchRecord()
 
     def reset(self) -> None:
         """Replace all match data with a fresh setup state."""
         self.state = GameState.fresh()
+        self.record = MatchRecord()
 
     def piece_at(self, position: BoardPosition) -> Piece | None:
         return next(
@@ -247,7 +257,10 @@ class GameEngine:
         king = self.state.kings[side]
         return valid_king_setup_position(king, king.position)
 
-    def start_battle(self) -> GameResult | None:
+    def start_battle(
+        self,
+        metadata: dict[str, MetadataValue] | None = None,
+    ) -> GameResult | None:
         """Initialize turn history and adjudicate an immobile starting side."""
         if not self.setup_is_valid("red") or not self.setup_is_valid("black"):
             raise IllegalAction("both leaders need valid setup positions")
@@ -257,7 +270,15 @@ class GameEngine:
         self.state.pending_promotion_id = None
         self.state.no_progress_plies = 0
         self.state.repetition_counts = {}
-        return self._adjudicate_turn_start()
+        self.record = MatchRecord(
+            setup=tuple(
+                SetupPieceRecord.from_piece(piece)
+                for piece in sorted(self.state.pieces, key=lambda item: item.piece_id)
+            ),
+            metadata=dict(metadata or {}),
+        )
+        result = self._adjudicate_turn_start()
+        return result
 
     def adjudicate_current_turn(self) -> GameResult | None:
         """Apply terminal rules without changing the current position."""
@@ -290,18 +311,17 @@ class GameEngine:
             raise IllegalAction("the target is not legal for the selected piece")
 
         captured = self.piece_at(target)
+        origin = piece.position
         is_chess_pawn = piece.game == "chess" and piece.kind == "pawn"
         is_foot_soldier = is_chess_pawn or (
             piece.game == "xiangqi" and piece.kind == "bing"
         )
         final_row = 0 if piece.side == "red" else BOARD_ROWS - 1
         will_promote = is_chess_pawn and target[1] == final_row
-        if (
-            will_promote
-            and promotion is not None
-            and promotion not in PROMOTION_OPTIONS
+        if promotion is not None and (
+            not will_promote or promotion not in PROMOTION_OPTIONS
         ):
-            raise IllegalAction("unsupported promotion kind")
+            raise IllegalAction("promotion is not valid for this move")
 
         if captured is not None:
             self.state.pieces.remove(captured)
@@ -309,15 +329,45 @@ class GameEngine:
         piece.moved = True
 
         if captured is not None and captured.kind == "king":
+            self.record.actions.append(
+                ActionRecord.move(
+                    piece.side,
+                    piece.piece_id,
+                    origin,
+                    target,
+                    promotion,
+                    captured.piece_id,
+                )
+            )
             self._set_result(GameResult(piece.side, "king_capture"))
             return MoveOutcome(piece, captured, False, self.state.result)
 
         if will_promote:
             if promotion is None:
                 self.state.pending_promotion_id = piece.piece_id
+                self.record.actions.append(
+                    ActionRecord.move(
+                        piece.side,
+                        piece.piece_id,
+                        origin,
+                        target,
+                        None,
+                        None if captured is None else captured.piece_id,
+                    )
+                )
                 return MoveOutcome(piece, captured, True, None)
             piece.kind = promotion
 
+        self.record.actions.append(
+            ActionRecord.move(
+                piece.side,
+                piece.piece_id,
+                origin,
+                target,
+                promotion,
+                None if captured is None else captured.piece_id,
+            )
+        )
         result = self._complete_turn(captured is not None, is_foot_soldier)
         return MoveOutcome(piece, captured, False, result)
 
@@ -328,6 +378,9 @@ class GameEngine:
             raise IllegalAction("no promotion is pending")
         if kind not in PROMOTION_OPTIONS:
             raise IllegalAction("unsupported promotion kind")
+        if not self.record.actions:
+            raise IllegalAction("promotion move is missing from match history")
+        self.record.actions[-1] = self.record.actions[-1].with_promotion(kind)
         piece.kind = kind
         self.state.pending_promotion_id = None
         result = self._complete_turn(capture_happened=False, pawn_moved=True)
@@ -337,6 +390,7 @@ class GameEngine:
         """End the match immediately with the opposing side as winner."""
         if self.state.phase != "playing":
             raise IllegalAction("the battle has not started")
+        self.record.actions.append(ActionRecord.resignation(side))
         result = GameResult(_other_side(side), "resignation")
         self._set_result(result)
         return result
@@ -410,6 +464,7 @@ class GameEngine:
     def _set_result(self, result: GameResult) -> None:
         self.state.result = result
         self.state.phase = "game_over"
+        self.record.result = ResultRecord(result.winner, result.reason)
 
     def _position_key(self) -> tuple[object, ...]:
         pieces = tuple(
@@ -427,6 +482,162 @@ class GameEngine:
             )
         )
         return self.state.turn, pieces
+
+    def export_record(self) -> dict[str, object]:
+        """Return a detached JSON-compatible record of the current match."""
+        return MatchRecord.from_dict(self.record.to_dict()).to_dict()
+
+    def undo_last_action(self) -> bool:
+        """Restore the position immediately before the latest recorded action."""
+        if not self.record.actions:
+            return False
+        replacement = self.from_record(self.record, len(self.record.actions) - 1)
+        self.state = replacement.state
+        self.record = replacement.record
+        return True
+
+    def replay_at(self, action_count: int) -> GameEngine:
+        """Build an independent engine at one point in this match's timeline."""
+        return self.from_record(self.record, action_count)
+
+    @classmethod
+    def from_record(
+        cls,
+        record: MatchRecord | dict[str, object],
+        action_count: int | None = None,
+    ) -> GameEngine:
+        """Validate and replay a match record through authoritative move rules."""
+        source = (
+            MatchRecord.from_dict(record)
+            if isinstance(record, dict)
+            else MatchRecord.from_dict(record.to_dict())
+        )
+        count = len(source.actions) if action_count is None else action_count
+        if not 0 <= count <= len(source.actions):
+            raise MatchRecordError("replay action count is out of range")
+
+        engine = cls()
+        engine.restore_setup(source.setup)
+        engine.start_battle(source.metadata)
+        for expected in source.actions[:count]:
+            if expected.side != engine.state.turn:
+                raise MatchRecordError("recorded action is assigned to the wrong side")
+            if expected.kind == "resign":
+                try:
+                    engine.resign(expected.side)
+                except IllegalAction as error:
+                    raise MatchRecordError(
+                        "record contains an illegal action"
+                    ) from error
+                continue
+            if (
+                expected.piece_id is None
+                or expected.origin is None
+                or expected.target is None
+            ):
+                raise MatchRecordError("move action is incomplete")
+            piece = next(
+                (
+                    item
+                    for item in engine.state.pieces
+                    if item.piece_id == expected.piece_id
+                ),
+                None,
+            )
+            if piece is None or piece.position != expected.origin:
+                raise MatchRecordError("recorded move origin does not match the board")
+            try:
+                outcome = engine.apply_action(
+                    expected.piece_id,
+                    expected.target,
+                    expected.promotion,
+                )
+            except IllegalAction as error:
+                raise MatchRecordError("record contains an illegal action") from error
+            captured_id = (
+                None if outcome.captured is None else outcome.captured.piece_id
+            )
+            if captured_id != expected.captured_piece_id:
+                raise MatchRecordError("recorded capture does not match the board")
+
+        if count == len(source.actions):
+            generated_result = engine.record.result
+            if generated_result != source.result:
+                raise MatchRecordError(
+                    "recorded result does not match replayed actions"
+                )
+        return engine
+
+    def restore_setup(self, setup: tuple[SetupPieceRecord, ...]) -> None:
+        """Validate and load a completed setup into a fresh setup-phase engine."""
+        if not setup:
+            raise MatchRecordError("match setup cannot be empty")
+        ids = [item.piece_id for item in setup]
+        positions = [item.position for item in setup]
+        if len(ids) != len(set(ids)) or len(positions) != len(set(positions)):
+            raise MatchRecordError("setup piece IDs and positions must be unique")
+        if any(piece_id <= 0 for piece_id in ids):
+            raise MatchRecordError("setup piece IDs must be positive")
+        if any(
+            not (0 <= column < BOARD_COLS and 0 <= row < BOARD_ROWS)
+            for column, row in positions
+        ):
+            raise MatchRecordError("setup contains an out-of-bounds position")
+
+        pieces = [
+            Piece(item.piece_id, item.game, item.kind, item.side, item.position)
+            for item in sorted(setup, key=lambda value: value.piece_id)
+        ]
+        king_lists = {
+            side: [
+                piece for piece in pieces if piece.side == side and piece.kind == "king"
+            ]
+            for side in cast(tuple[Side, Side], ("red", "black"))
+        }
+        if any(len(kings) != 1 for kings in king_lists.values()):
+            raise MatchRecordError("setup must contain one leader for each side")
+        kings: dict[Side, Piece] = {
+            side: king_lists[side][0]
+            for side in cast(tuple[Side, Side], ("red", "black"))
+        }
+
+        budgets: dict[Side, int] = {
+            "red": STARTING_BUDGET_UNITS,
+            "black": STARTING_BUDGET_UNITS,
+        }
+        counts: dict[tuple[Side, Game, str], int] = {}
+        totals: dict[Side, int] = {"red": 0, "black": 0}
+        for piece in pieces:
+            definition = PIECE_DEFINITION_BY_KEY.get((piece.game, piece.kind))
+            if definition is None:
+                raise MatchRecordError("setup contains an unknown piece")
+            if piece.kind == "king":
+                budgets[piece.side] -= definition.cost_units
+                if not valid_king_setup_position(piece, piece.position):
+                    raise MatchRecordError("setup contains an invalid leader position")
+                continue
+            if piece.position[1] not in DEPLOYMENT_ROWS[piece.side]:
+                raise MatchRecordError("setup piece is outside its deployment zone")
+            key = (piece.side, piece.game, piece.kind)
+            counts[key] = counts.get(key, 0) + 1
+            totals[piece.side] += 1
+            budgets[piece.side] -= definition.cost_units
+            if counts[key] > definition.limit:
+                raise MatchRecordError("setup exceeds a per-kind purchase limit")
+        if any(total > MAX_BOUGHT_PIECES for total in totals.values()):
+            raise MatchRecordError("setup exceeds the total piece limit")
+        if any(budget < 0 for budget in budgets.values()):
+            raise MatchRecordError("setup exceeds its purchase budget")
+
+        self.state = GameState(
+            pieces=pieces,
+            kings=kings,
+            budget_units=budgets,
+            purchase_counts=counts,
+            bought_totals=totals,
+            next_piece_id=max(ids) + 1,
+        )
+        self.record = MatchRecord()
 
 
 def _other_side(side: Side) -> Side:

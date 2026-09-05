@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar, cast
 
 try:
     import pygame
@@ -15,6 +16,7 @@ except ImportError:  # Friendly message when launched before dependencies exist.
 
 from ai import (
     CatalogOption,
+    Difficulty,
     GameObservation,
     GamePolicy,
     HeuristicPolicy,
@@ -24,6 +26,7 @@ from ai import (
 )
 from engine import PROMOTION_OPTIONS, GameEngine, GameResult, MoveOutcome
 from i18n import LANGUAGE_LABELS, Language, translate
+from match_history import MatchRecord, MatchRecordError, MetadataValue, SetupPieceRecord
 from pieces import (
     BoardPosition,
     Game,
@@ -41,6 +44,7 @@ from settings import (
     FPS,
     GRID_SIZE,
     MAX_BOUGHT_PIECES,
+    PIECE_DEFINITION_BY_KEY,
     PIECE_DEFINITIONS,
     PIECE_RADIUS,
     SIDEBAR_WIDTH,
@@ -54,13 +58,24 @@ from settings import (
 )
 
 PixelPosition = tuple[int, int]
-ScreenState = Literal["menu", "setup", "handoff", "playing", "game_over"]
+ScreenState = Literal[
+    "menu",
+    "single_options",
+    "setup",
+    "handoff",
+    "playing",
+    "game_over",
+    "replay",
+    "setup_preview",
+]
 HandoffTarget = Literal["black", "play"]
 GameMode = Literal["single", "local"]
 ImageKey = tuple[Game, str, Side]
+OptionValue = TypeVar("OptionValue")
 
-AI_SIDE: Side = "black"
 AI_MOVE_DELAY_MS = 450
+DETERMINISTIC_AI_SEED = 20250905
+LAST_MATCH_PATH = Path(__file__).parent / "saves" / "last_match.json"
 
 
 @dataclass(frozen=True)
@@ -165,6 +180,11 @@ class HybridChessGame:
         pygame.init()
         self.language: Language = "zh"
         self.game_mode: GameMode = "single"
+        self.human_side: Side = "red"
+        self.ai_difficulty: Difficulty = "medium"
+        self.deterministic_ai_setup = False
+        self.show_setup_after_match = True
+        self.custom_ai_policy = ai_policy is not None
         self.engine = GameEngine()
         self.ai_policy: GamePolicy = (
             ai_policy if ai_policy is not None else HeuristicPolicy()
@@ -185,6 +205,8 @@ class HybridChessGame:
         }
         self.running = True
         self.state: ScreenState = "menu"
+        self.replay_record: MatchRecord | None = None
+        self.replay_index = 0
         self.load_images()
         self.reset_match()
 
@@ -216,6 +238,10 @@ class HybridChessGame:
         self.ai_move_due_at: int | None = None
         self.handoff_target: HandoffTarget = "black"
         self.status = self.tr("status.setup.red")
+
+    @property
+    def ai_side(self) -> Side:
+        return "black" if self.human_side == "red" else "red"
 
     @property
     def pieces(self) -> list[Piece]:
@@ -265,6 +291,10 @@ class HybridChessGame:
             if event.key == pygame.K_ESCAPE:
                 if self.state == "menu":
                     self.running = False
+                elif self.state in ("replay", "setup_preview"):
+                    self.finish_replay()
+                elif self.state == "single_options":
+                    self.state = "menu"
                 else:
                     self.state = "menu"
                     self.reset_match()
@@ -274,6 +304,8 @@ class HybridChessGame:
 
         if self.state == "menu":
             self.handle_menu_click(event.pos)
+        elif self.state == "single_options":
+            self.handle_single_options_click(event.pos)
         elif self.state == "setup":
             self.handle_setup_click(event.pos, event.button)
         elif self.state == "handoff":
@@ -282,6 +314,8 @@ class HybridChessGame:
             self.handle_play_click(event.pos, event.button)
         elif self.state == "game_over":
             self.handle_game_over_click(event.pos)
+        elif self.state in ("replay", "setup_preview"):
+            self.handle_replay_click(event.pos)
 
     def handle_menu_click(self, position: PixelPosition) -> None:
         for game_mode, rect in self.game_mode_rects().items():
@@ -294,8 +328,36 @@ class HybridChessGame:
                 pygame.display.set_caption(self.tr("window_title"))
                 return
         if self.menu_start_rect().collidepoint(position):
-            self.reset_match()
-            self.state = "setup"
+            if self.game_mode == "single":
+                self.state = "single_options"
+            else:
+                self.start_new_match()
+            return
+        if self.menu_load_rect().collidepoint(position) and LAST_MATCH_PATH.exists():
+            self.load_last_match()
+
+    def handle_single_options_click(self, position: PixelPosition) -> None:
+        for side, rect in self.human_side_rects().items():
+            if rect.collidepoint(position):
+                self.human_side = side
+                return
+        for difficulty, rect in self.difficulty_rects().items():
+            if rect.collidepoint(position):
+                self.ai_difficulty = difficulty
+                return
+        for deterministic, rect in self.setup_variety_rects().items():
+            if rect.collidepoint(position):
+                self.deterministic_ai_setup = deterministic
+                return
+        for enabled, rect in self.setup_preview_option_rects().items():
+            if rect.collidepoint(position):
+                self.show_setup_after_match = enabled
+                return
+        start, back = self.single_options_action_rects()
+        if start.collidepoint(position):
+            self.start_new_match()
+        elif back.collidepoint(position):
+            self.state = "menu"
 
     def handle_setup_click(self, position: PixelPosition, button: int) -> None:
         if button == 1:
@@ -356,7 +418,13 @@ class HybridChessGame:
     def handle_play_click(self, position: PixelPosition, button: int) -> None:
         if button != 1:
             return
-        if self.game_mode == "single" and self.turn == AI_SIDE:
+        if self.play_undo_rect().collidepoint(position) and self.can_undo():
+            self.undo_turn()
+            return
+        if self.play_save_rect().collidepoint(position):
+            self.save_current_match()
+            return
+        if self.game_mode == "single" and self.turn == self.ai_side:
             self.status = self.tr("status.ai_thinking")
             return
         if self.pending_promotion is not None:
@@ -388,15 +456,73 @@ class HybridChessGame:
         self.status = self.tr("status.no_piece")
 
     def handle_game_over_click(self, position: PixelPosition) -> None:
-        restart, menu = self.game_over_rects()
-        if restart.collidepoint(position):
-            self.reset_match()
-            self.state = "setup"
-        elif menu.collidepoint(position):
+        rects = self.game_over_rects()
+        if rects["same"].collidepoint(position):
+            if self.game_mode == "single":
+                self.rematch_same_armies()
+            else:
+                self.start_new_match()
+        elif rects["new"].collidepoint(position) and self.game_mode == "single":
+            self.rematch_new_ai_army()
+        elif rects["replay"].collidepoint(position):
+            self.begin_replay()
+        elif rects["setup"].collidepoint(position) and self.show_setup_after_match:
+            self.begin_replay(setup_only=True)
+        elif rects["save"].collidepoint(position):
+            self.save_current_match()
+        elif rects["menu"].collidepoint(position):
             self.reset_match()
             self.state = "menu"
 
+    def handle_replay_click(self, position: PixelPosition) -> None:
+        previous, next_step, done = self.replay_rects()
+        if done.collidepoint(position):
+            self.finish_replay()
+            return
+        if self.state == "setup_preview" or self.replay_record is None:
+            return
+        if previous.collidepoint(position) and self.replay_index > 0:
+            self.replay_index -= 1
+        elif next_step.collidepoint(position) and self.replay_index < len(
+            self.replay_record.actions
+        ):
+            self.replay_index += 1
+        else:
+            return
+        self.engine = GameEngine.from_record(self.replay_record, self.replay_index)
+
     # ---------- Setup logic ----------
+
+    def configure_builtin_ai(self) -> None:
+        """Apply the selected difficulty and setup-randomness options."""
+        if self.custom_ai_policy:
+            return
+        setup_seed = DETERMINISTIC_AI_SEED if self.deterministic_ai_setup else None
+        self.ai_policy = HeuristicPolicy(
+            difficulty=self.ai_difficulty,
+            setup_seed=setup_seed,
+        )
+
+    def start_new_match(self) -> None:
+        """Create a setup using the currently selected game options."""
+        self.reset_match()
+        if self.game_mode == "single":
+            self.configure_builtin_ai()
+            if self.human_side == "black":
+                self.setup_ai_opponent()
+            self.setup_side = self.human_side
+            self.status = self.tr(f"status.setup.{self.human_side}")
+        self.state = "setup"
+
+    def match_metadata(self) -> dict[str, MetadataValue]:
+        """Describe UI-level options alongside the portable engine record."""
+        return {
+            "mode": self.game_mode,
+            "human_side": self.human_side,
+            "ai_difficulty": self.ai_difficulty,
+            "deterministic_ai_setup": self.deterministic_ai_setup,
+            "show_setup_after_match": self.show_setup_after_match,
+        }
 
     def can_buy(self, catalog_index: int) -> bool:
         return self.engine.can_buy(
@@ -481,9 +607,10 @@ class HybridChessGame:
             return
         self.selected_catalog_index = None
         self.selected_setup_king = False
-        if self.game_mode == "single" and self.setup_side == "red":
-            self.setup_ai_opponent()
-            self.setup_side = "red"
+        if self.game_mode == "single":
+            if self.human_side == "red":
+                self.setup_ai_opponent()
+            self.setup_side = self.human_side
             self.start_battle("status.ai_ready")
             return
         self.state = "handoff"
@@ -494,7 +621,7 @@ class HybridChessGame:
 
     def setup_ai_opponent(self) -> None:
         """Ask the active policy for a setup and apply only validated choices."""
-        side: Side = AI_SIDE
+        side = self.ai_side
         request = SetupRequest(
             side=side,
             budget_units=STARTING_BUDGET_UNITS,
@@ -523,7 +650,8 @@ class HybridChessGame:
         position_outcome = self.engine.place_king(side, plan.king_position)
         if not position_outcome.accepted:
             self.engine.set_king_type(side, "xiangqi")
-            self.engine.place_king(side, (4, 0))
+            fallback_row = 0 if side == "black" else BOARD_ROWS - 1
+            self.engine.place_king(side, (4, fallback_row))
 
         for placement in plan.placements:
             matching_item = next(
@@ -574,7 +702,7 @@ class HybridChessGame:
 
     def start_battle(self, status_key: str) -> None:
         """Start engine history and enter play unless setup is already terminal."""
-        result = self.engine.start_battle()
+        result = self.engine.start_battle(self.match_metadata())
         if result is not None:
             self.show_game_result(result)
             return
@@ -585,7 +713,7 @@ class HybridChessGame:
     def schedule_current_turn(self) -> None:
         """Update status and schedule, but do not block on, an AI response."""
         self.status = self.tr("status.turn", side=self.side_name(self.turn))
-        if self.game_mode == "single" and self.turn == AI_SIDE:
+        if self.game_mode == "single" and self.turn == self.ai_side:
             self.ai_move_due_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
             self.status = self.tr("status.ai_thinking")
         else:
@@ -596,6 +724,131 @@ class HybridChessGame:
         self.state = "game_over"
         self.ai_move_due_at = None
         self.status = self.tr(f"game_over.reason.{result.reason}")
+
+    def can_undo(self) -> bool:
+        if self.game_mode == "local":
+            return bool(self.engine.record.actions)
+        return any(
+            action.side == self.human_side for action in self.engine.record.actions
+        )
+
+    def undo_turn(self) -> None:
+        """Undo one ply locally or the latest human-plus-AI turn in solo play."""
+        if not self.can_undo():
+            return
+        if self.game_mode == "local":
+            self.engine.undo_last_action()
+        else:
+            human_index = max(
+                index
+                for index, action in enumerate(self.engine.record.actions)
+                if action.side == self.human_side
+            )
+            self.engine = GameEngine.from_record(self.engine.record, human_index)
+        self.selected_piece = None
+        self.available_moves = []
+        self.state = "playing"
+        self.status = self.tr("status.undo")
+        self.ai_move_due_at = None
+
+    def rematch_same_armies(self) -> None:
+        """Restart from the exact recorded setup without rerunning either setup."""
+        source = MatchRecord.from_dict(self.engine.record.to_dict())
+        self.engine = GameEngine.from_record(source, 0)
+        self.selected_piece = None
+        self.available_moves = []
+        if self.engine.state.result is not None:
+            self.show_game_result(self.engine.state.result)
+            return
+        self.state = "playing"
+        self.schedule_current_turn()
+
+    def rematch_new_ai_army(self) -> None:
+        """Keep the player's setup while regenerating the opposing AI army."""
+        source = MatchRecord.from_dict(self.engine.record.to_dict())
+        human_setup = tuple(
+            piece for piece in source.setup if piece.side == self.human_side
+        )
+        self.reset_match()
+        self.configure_builtin_ai()
+        self.restore_side_setup(self.human_side, human_setup)
+        self.setup_ai_opponent()
+        self.setup_side = self.human_side
+        self.start_battle("status.ai_ready")
+
+    def restore_side_setup(
+        self,
+        side: Side,
+        setup: tuple[SetupPieceRecord, ...],
+    ) -> None:
+        """Apply one recorded side to a fresh setup through engine validation."""
+        king_record = next(piece for piece in setup if piece.kind == "king")
+        if not self.engine.set_king_type(side, king_record.game).accepted:
+            raise MatchRecordError("recorded leader type cannot be restored")
+        if not self.engine.place_king(side, king_record.position).accepted:
+            raise MatchRecordError("recorded leader position cannot be restored")
+        for piece in sorted(setup, key=lambda item: item.piece_id):
+            if piece.kind == "king":
+                continue
+            definition = PIECE_DEFINITION_BY_KEY[(piece.game, piece.kind)]
+            if not self.engine.buy_piece(side, definition, piece.position).accepted:
+                raise MatchRecordError("recorded army cannot be restored")
+
+    def begin_replay(self, *, setup_only: bool = False) -> None:
+        """Open the initial setup or an interactive action-by-action replay."""
+        self.replay_record = MatchRecord.from_dict(self.engine.record.to_dict())
+        self.replay_index = 0
+        self.engine = GameEngine.from_record(self.replay_record, 0)
+        self.state = "setup_preview" if setup_only else "replay"
+        self.ai_move_due_at = None
+
+    def finish_replay(self) -> None:
+        if self.replay_record is None:
+            self.state = "menu"
+            return
+        self.engine = GameEngine.from_record(self.replay_record)
+        self.replay_record = None
+        self.replay_index = 0
+        self.state = "game_over" if self.engine.state.result else "playing"
+        if self.state == "playing":
+            self.schedule_current_turn()
+
+    def load_last_match(self) -> None:
+        """Load and validate the default save, then resume or show its result."""
+        try:
+            record = MatchRecord.load(LAST_MATCH_PATH)
+            self.engine = GameEngine.from_record(record)
+        except (OSError, MatchRecordError):
+            self.status = self.tr("status.load_failed")
+            return
+        metadata = record.metadata
+        if metadata.get("mode") in ("single", "local"):
+            self.game_mode = cast(GameMode, metadata["mode"])
+        if metadata.get("human_side") in ("red", "black"):
+            self.human_side = cast(Side, metadata["human_side"])
+        if metadata.get("ai_difficulty") in ("easy", "medium", "hard"):
+            self.ai_difficulty = cast(Difficulty, metadata["ai_difficulty"])
+        deterministic = metadata.get("deterministic_ai_setup")
+        preview = metadata.get("show_setup_after_match")
+        if isinstance(deterministic, bool):
+            self.deterministic_ai_setup = deterministic
+        if isinstance(preview, bool):
+            self.show_setup_after_match = preview
+        self.configure_builtin_ai()
+        if self.engine.state.result:
+            self.show_game_result(self.engine.state.result)
+        else:
+            self.state = "playing"
+            self.schedule_current_turn()
+
+    def save_current_match(self) -> None:
+        """Persist the current portable record to the UI's default save slot."""
+        try:
+            self.engine.record.save(LAST_MATCH_PATH)
+        except OSError:
+            self.status = self.tr("status.save_failed")
+            return
+        self.status = self.tr("status.match_saved", path=str(LAST_MATCH_PATH))
 
     def game_observation(self) -> GameObservation:
         """Create the immutable state passed to AI policies."""
@@ -611,7 +864,7 @@ class HybridChessGame:
         if (
             self.game_mode != "single"
             or self.state != "playing"
-            or self.turn != AI_SIDE
+            or self.turn != self.ai_side
             or self.pending_promotion is not None
         ):
             return
@@ -625,7 +878,7 @@ class HybridChessGame:
     def perform_ai_turn(self) -> None:
         """Request, validate, and execute one AI action immediately."""
         observation = self.game_observation()
-        legal_actions = enumerate_legal_actions(observation, AI_SIDE)
+        legal_actions = enumerate_legal_actions(observation, self.ai_side)
         if not legal_actions:
             result = self.engine.adjudicate_current_turn()
             if result is not None:
@@ -642,7 +895,7 @@ class HybridChessGame:
             if live_piece.piece_id == action.piece_id
         )
         promotion = None
-        final_row = BOARD_ROWS - 1
+        final_row = 0 if piece.side == "red" else BOARD_ROWS - 1
         if (
             piece.game == "chess"
             and piece.kind == "pawn"
@@ -663,6 +916,7 @@ class HybridChessGame:
                 piece=description,
                 column=action.target[0] + 1,
                 row=action.target[1] + 1,
+                side=self.side_name(self.human_side),
             )
 
     # ---------- Lookup and coordinates ----------
@@ -715,7 +969,11 @@ class HybridChessGame:
 
     @staticmethod
     def menu_start_rect() -> pygame.Rect:
-        return pygame.Rect(WINDOW_WIDTH // 2 - 190, 565, 380, 64)
+        return pygame.Rect(WINDOW_WIDTH // 2 - 290, 565, 280, 58)
+
+    @staticmethod
+    def menu_load_rect() -> pygame.Rect:
+        return pygame.Rect(WINDOW_WIDTH // 2 + 10, 565, 280, 58)
 
     @staticmethod
     def game_mode_rects() -> dict[GameMode, pygame.Rect]:
@@ -734,6 +992,42 @@ class HybridChessGame:
             language: pygame.Rect(start_x + index * (width + gap), 505, width, 42)
             for index, language in enumerate(languages)
         }
+
+    @staticmethod
+    def human_side_rects() -> dict[Side, pygame.Rect]:
+        return {
+            "red": pygame.Rect(410, 160, 220, 44),
+            "black": pygame.Rect(650, 160, 220, 44),
+        }
+
+    @staticmethod
+    def difficulty_rects() -> dict[Difficulty, pygame.Rect]:
+        return {
+            "easy": pygame.Rect(335, 255, 190, 44),
+            "medium": pygame.Rect(545, 255, 190, 44),
+            "hard": pygame.Rect(755, 255, 190, 44),
+        }
+
+    @staticmethod
+    def setup_variety_rects() -> dict[bool, pygame.Rect]:
+        return {
+            True: pygame.Rect(410, 350, 220, 44),
+            False: pygame.Rect(650, 350, 220, 44),
+        }
+
+    @staticmethod
+    def setup_preview_option_rects() -> dict[bool, pygame.Rect]:
+        return {
+            True: pygame.Rect(410, 445, 220, 44),
+            False: pygame.Rect(650, 445, 220, 44),
+        }
+
+    @staticmethod
+    def single_options_action_rects() -> tuple[pygame.Rect, pygame.Rect]:
+        return (
+            pygame.Rect(410, 550, 300, 58),
+            pygame.Rect(730, 550, 140, 58),
+        )
 
     @staticmethod
     def finish_setup_rect() -> pygame.Rect:
@@ -781,11 +1075,33 @@ class HybridChessGame:
         }
 
     @staticmethod
-    def game_over_rects() -> tuple[pygame.Rect, pygame.Rect]:
+    def play_undo_rect() -> pygame.Rect:
+        return pygame.Rect(SIDEBAR_X + 28, 285, 205, 44)
+
+    @staticmethod
+    def play_save_rect() -> pygame.Rect:
+        return pygame.Rect(SIDEBAR_X + 247, 285, 205, 44)
+
+    @staticmethod
+    def replay_rects() -> tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
         return (
-            pygame.Rect(WINDOW_WIDTH // 2 - 230, 500, 210, 62),
-            pygame.Rect(WINDOW_WIDTH // 2 + 20, 500, 210, 62),
+            pygame.Rect(SIDEBAR_X + 28, 610, 135, 48),
+            pygame.Rect(SIDEBAR_X + 177, 610, 135, 48),
+            pygame.Rect(SIDEBAR_X + 326, 610, 150, 48),
         )
+
+    @staticmethod
+    def game_over_rects() -> dict[str, pygame.Rect]:
+        left = WINDOW_WIDTH // 2 - 245
+        right = WINDOW_WIDTH // 2 + 15
+        return {
+            "same": pygame.Rect(left, 490, 230, 48),
+            "new": pygame.Rect(right, 490, 230, 48),
+            "replay": pygame.Rect(left, 550, 230, 48),
+            "setup": pygame.Rect(right, 550, 230, 48),
+            "save": pygame.Rect(left, 610, 230, 48),
+            "menu": pygame.Rect(right, 610, 230, 48),
+        }
 
     # ---------- Drawing ----------
 
@@ -793,6 +1109,9 @@ class HybridChessGame:
         self.screen.fill(COLORS["background"])
         if self.state == "menu":
             self.draw_menu()
+            return
+        if self.state == "single_options":
+            self.draw_single_options()
             return
         if self.state == "handoff":
             self.draw_handoff()
@@ -802,6 +1121,8 @@ class HybridChessGame:
         self.draw_board(visible_side)
         if self.state == "setup":
             self.draw_setup_sidebar()
+        elif self.state in ("replay", "setup_preview"):
+            self.draw_replay_sidebar()
         else:
             self.draw_play_sidebar()
         if self.pending_promotion is not None:
@@ -864,6 +1185,11 @@ class HybridChessGame:
             self.tr(f"menu.start.{self.game_mode}"),
             active=True,
         )
+        self.draw_button(
+            self.menu_load_rect(),
+            self.tr("menu.load"),
+            active=LAST_MATCH_PATH.exists(),
+        )
         self.draw_text(
             self.tr("menu.tagline"),
             self.fonts["small"],
@@ -878,6 +1204,79 @@ class HybridChessGame:
             (640, 720),
             center=True,
         )
+
+    def draw_single_options(self) -> None:
+        """Draw configuration controls before entering a solo setup."""
+        self.draw_text(
+            self.tr("options.title"),
+            self.fonts["title"],
+            COLORS["text"],
+            (640, 70),
+            center=True,
+        )
+        self.draw_option_row(
+            "options.side",
+            self.human_side_rects(),
+            self.human_side,
+            lambda side: self.side_name(cast(Side, side)),
+            125,
+        )
+        self.draw_option_row(
+            "options.difficulty",
+            self.difficulty_rects(),
+            self.ai_difficulty,
+            lambda difficulty: self.tr(f"options.difficulty.{difficulty}"),
+            220,
+        )
+        self.draw_option_row(
+            "options.setup",
+            self.setup_variety_rects(),
+            self.deterministic_ai_setup,
+            lambda deterministic: self.tr(
+                "options.setup.deterministic"
+                if deterministic
+                else "options.setup.varied"
+            ),
+            315,
+        )
+        self.draw_option_row(
+            "options.preview",
+            self.setup_preview_option_rects(),
+            self.show_setup_after_match,
+            lambda enabled: self.tr("options.yes" if enabled else "options.no"),
+            410,
+        )
+        start, back = self.single_options_action_rects()
+        self.draw_button(start, self.tr("options.start"), active=True)
+        self.draw_button(back, self.tr("options.back"), active=False)
+        self.draw_wrapped_text(
+            self.tr(f"options.difficulty_help.{self.ai_difficulty}"),
+            self.fonts["small"],
+            COLORS["muted"],
+            (640, 650),
+            max_width=760,
+            line_height=24,
+            center=True,
+        )
+
+    def draw_option_row(
+        self,
+        title_key: str,
+        rects: Mapping[OptionValue, pygame.Rect],
+        selected: OptionValue,
+        label_for: Callable[[OptionValue], str],
+        title_y: int,
+    ) -> None:
+        """Render one labeled group of mutually exclusive option buttons."""
+        self.draw_text(
+            self.tr(title_key),
+            self.fonts["body"],
+            COLORS["text"],
+            (640, title_y),
+            center=True,
+        )
+        for value, rect in rects.items():
+            self.draw_button(rect, label_for(value), active=value == selected)
 
     def draw_board(self, visible_side: Side | None) -> None:
         board_left = BOARD_ORIGIN_X - 42
@@ -1471,11 +1870,25 @@ class HybridChessGame:
             )
         if self.game_mode == "single":
             self.draw_text(
-                self.tr("play.ai_opponent"),
+                self.tr(
+                    "play.ai_opponent",
+                    side=self.side_name(self.ai_side),
+                    difficulty=self.tr(f"options.difficulty.{self.ai_difficulty}"),
+                ),
                 self.fonts["small"],
                 COLORS["accent"],
                 (SIDEBAR_X + 28, 235),
             )
+        self.draw_button(
+            self.play_undo_rect(),
+            self.tr("play.undo"),
+            active=self.can_undo(),
+        )
+        self.draw_button(
+            self.play_save_rect(),
+            self.tr("play.save"),
+            active=True,
+        )
 
         pygame.draw.line(
             self.screen,
@@ -1527,6 +1940,66 @@ class HybridChessGame:
             COLORS["muted"],
             (SIDEBAR_X + 28, 735),
         )
+
+    def draw_replay_sidebar(self) -> None:
+        """Draw timeline controls beside the initial setup or replay position."""
+        self.draw_sidebar_panel()
+        setup_only = self.state == "setup_preview"
+        self.draw_text(
+            self.tr("replay.setup_title" if setup_only else "replay.title"),
+            self.fonts["subtitle"],
+            COLORS["text"],
+            (SIDEBAR_X + 28, 64),
+        )
+        action_total = (
+            0 if self.replay_record is None else len(self.replay_record.actions)
+        )
+        self.draw_text(
+            self.tr(
+                "replay.setup_body" if setup_only else "replay.progress",
+                current=self.replay_index,
+                total=action_total,
+            ),
+            self.fonts["body"],
+            COLORS["muted"],
+            (SIDEBAR_X + 28, 125),
+        )
+        if not setup_only and self.replay_record and self.replay_index:
+            action = self.replay_record.actions[self.replay_index - 1]
+            description = (
+                self.tr("replay.resigned", side=self.side_name(action.side))
+                if action.kind == "resign"
+                else self.tr(
+                    "replay.move",
+                    side=self.side_name(action.side),
+                    column=cast(BoardPosition, action.target)[0] + 1,
+                    row=cast(BoardPosition, action.target)[1] + 1,
+                )
+            )
+            self.draw_wrapped_text(
+                description,
+                self.fonts["small"],
+                COLORS["text"],
+                (SIDEBAR_X + 28, 190),
+                max_width=SIDEBAR_WIDTH - 56,
+                line_height=25,
+            )
+        previous, next_step, done = self.replay_rects()
+        self.draw_button(
+            previous,
+            self.tr("replay.previous"),
+            active=not setup_only and self.replay_index > 0,
+        )
+        self.draw_button(
+            next_step,
+            self.tr("replay.next"),
+            active=(
+                not setup_only
+                and self.replay_record is not None
+                and self.replay_index < len(self.replay_record.actions)
+            ),
+        )
+        self.draw_button(done, self.tr("replay.done"), active=True)
 
     def draw_handoff(self) -> None:
         self.screen.fill(COLORS["overlay"])
@@ -1582,7 +2055,7 @@ class HybridChessGame:
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
         overlay.fill((15, 18, 20, 195))
         self.screen.blit(overlay, (0, 0))
-        modal = pygame.Rect(WINDOW_WIDTH // 2 - 320, 245, 640, 365)
+        modal = pygame.Rect(WINDOW_WIDTH // 2 - 330, 135, 660, 570)
         pygame.draw.rect(self.screen, COLORS["panel"], modal, border_radius=18)
         result = self.engine.state.result
         if result is None:
@@ -1591,7 +2064,7 @@ class HybridChessGame:
             self.tr("game_over.title"),
             self.fonts["subtitle"],
             COLORS["muted"],
-            (640, 310),
+            (640, 185),
             center=True,
         )
         headline = (
@@ -1603,18 +2076,47 @@ class HybridChessGame:
             COLORS["accent"] if result.winner is None else TEAM_COLORS[result.winner]
         )
         self.draw_text(
-            headline, self.fonts["title"], headline_color, (640, 385), center=True
+            headline, self.fonts["title"], headline_color, (640, 255), center=True
         )
         self.draw_text(
             self.tr(f"game_over.reason.{result.reason}"),
             self.fonts["body"],
             COLORS["text"],
-            (640, 445),
+            (640, 315),
             center=True,
         )
-        restart, menu = self.game_over_rects()
-        self.draw_button(restart, self.tr("game_over.restart"), active=True)
-        self.draw_button(menu, self.tr("game_over.menu"), active=False)
+        self.draw_wrapped_text(
+            self.status,
+            self.fonts["tiny"],
+            COLORS["muted"],
+            (640, 385),
+            max_width=560,
+            line_height=20,
+            center=True,
+        )
+        rects = self.game_over_rects()
+        self.draw_button(
+            rects["same"],
+            self.tr(
+                "game_over.same_armies"
+                if self.game_mode == "single"
+                else "game_over.restart"
+            ),
+            active=True,
+        )
+        self.draw_button(
+            rects["new"],
+            self.tr("game_over.new_ai"),
+            active=self.game_mode == "single",
+        )
+        self.draw_button(rects["replay"], self.tr("game_over.replay"), active=True)
+        self.draw_button(
+            rects["setup"],
+            self.tr("game_over.setup_preview"),
+            active=self.show_setup_after_match,
+        )
+        self.draw_button(rects["save"], self.tr("game_over.save"), active=True)
+        self.draw_button(rects["menu"], self.tr("game_over.menu"), active=False)
 
     def draw_sidebar_panel(self) -> None:
         rect = pygame.Rect(SIDEBAR_X, 28, SIDEBAR_WIDTH, WINDOW_HEIGHT - 56)

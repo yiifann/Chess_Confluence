@@ -16,7 +16,8 @@ terminal outcomes.
 - Other pieces may be placed anywhere in those four rows if the intersection is
   empty and the budget and purchase limits allow it.
 - Purchased pieces can be removed for a full refund before battle begins.
-- In single-player setup, the AI does not receive Red's hidden positions.
+- In single-player setup, the AI does not receive the human army's hidden
+  positions, regardless of the selected side.
 
 ## Turn and movement rules
 
@@ -59,4 +60,5 @@ because it changes that pawn's legal action set. Piece identifiers and irrelevan
 
 Promotion is part of the pawn's action. A human promotion pauses the interface
 for a choice without changing turns; AI promotion is supplied with its move.
-History and terminal checks are updated only after promotion is complete.
+The provisional move is recorded immediately and completed with the selected
+piece; repetition and terminal checks wait until the promotion is complete.

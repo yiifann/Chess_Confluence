@@ -15,6 +15,7 @@ in [RULES.md](RULES.md).
 | `engine.py` | Authoritative match state, setup validation, action application, history, and terminal results |
 | `pieces.py` | Piece data model, board bounds, setup zones, and movement generation |
 | `ai.py` | Renderer-independent policy contract, immutable observations/actions, and the heuristic AI |
+| `match_history.py` | Versioned JSON match records, serialization, and replay validation |
 | `settings.py` | Board geometry, colors, budgets, piece prices, limits, and asset paths |
 | `i18n.py` | Chinese, English, and French UI message catalogs |
 | `tests/` | Movement, localization, and AI policy regression tests |
@@ -22,21 +23,23 @@ in [RULES.md](RULES.md).
 The engine, rules, and AI modules deliberately do not import Pygame. This keeps them
 usable in unit tests, headless simulations, and future training environments.
 
+`GameEngine` also owns the match record. Undo and timeline replay rebuild a
+position from its validated initial setup and action prefix, so derived state
+such as repetition counts cannot drift from the visible board.
+
 ## Application state flow
 
 ```text
 menu
+  |-- single player --> options --> human setup + hidden AI setup --> playing
   |
-  v
-red setup
-  |-- single player --> AI setup --> playing
-  |
-  `-- local game --> privacy handoff --> black setup
-                                      --> reveal handoff --> playing
+  `-- local game --> red setup --> privacy handoff --> black setup
+                                                 --> reveal handoff --> playing
 
 playing --> promotion selection (human chess pawn only) --> playing
 playing --> opposing king captured --> game over
-game over --> new setup or menu
+playing --> undo --> validated earlier action prefix
+game over --> same-army/new-AI rematch, setup preview, replay, save, or menu
 ```
 
 `GameEngine` owns the live mutable match state. `HybridChessGame` owns only UI
@@ -80,11 +83,12 @@ The associated dataclasses are frozen and contain only ordinary Python values.
 `enumerate_legal_actions()` returns a deterministic ordering. These properties
 make observation/action encoding repeatable for an RL adapter.
 
-During secret setup, the Black policy receives the catalog and deployment rules
-but not Red's piece positions. During play it receives the complete revealed
-board. The engine validates setup placements, costs, limits, movement, and
-promotion output before mutating live state. An invalid move falls back to the
-first legal action at the UI-policy boundary rather than corrupting the match.
+During secret setup, the policy receives the catalog and its deployment rules
+but not the human army's positions. It can control Red or Black depending on the
+selected side. During play it receives the complete revealed board. The engine
+validates setup placements, costs, limits, movement, and promotion output before
+mutating live state. An invalid move falls back to the first legal action at the
+UI-policy boundary rather than corrupting the match.
 
 ### Replacing the heuristic with an RL model
 
@@ -153,9 +157,9 @@ From the repository root:
 
 ```bash
 python -m pytest -q -p no:cacheprovider
-ruff check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
-ruff format --check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
-python -m mypy main.py engine.py ai.py pieces.py settings.py i18n.py tests \
+ruff check --no-cache main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests
+ruff format --check --no-cache main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests
+python -m mypy main.py engine.py match_history.py ai.py pieces.py settings.py i18n.py tests \
   --ignore-missing-imports --cache-dir=NUL --no-error-summary
 ```
 

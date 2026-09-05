@@ -192,6 +192,18 @@ def test_invalid_promotion_does_not_partially_apply_move() -> None:
     assert engine.state.turn == "red"
 
 
+def test_promotion_argument_is_rejected_for_an_ordinary_move() -> None:
+    engine = GameEngine()
+    assert engine.start_battle() is None
+    red_king = engine.state.kings["red"]
+
+    with pytest.raises(IllegalAction):
+        engine.apply_action(red_king.piece_id, (3, 9), promotion="queen")
+
+    assert red_king.position == (4, 9)
+    assert engine.record.actions == []
+
+
 def test_resignation_awards_the_game_to_the_opponent() -> None:
     engine = GameEngine()
     assert engine.start_battle() is None
