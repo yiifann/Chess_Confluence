@@ -37,6 +37,12 @@ BLACK_LABELS = {
 
 @dataclass
 class Piece:
+    """Mutable live piece using chess or Xiangqi movement rules.
+
+    ``moved`` currently records whether a chess pawn has lost its initial
+    two-step option.
+    """
+
     piece_id: int
     game: Game
     kind: str
@@ -64,11 +70,13 @@ class Piece:
 
 
 def inside(position: BoardPosition) -> bool:
+    """Return whether an intersection lies on the 9×10 board."""
     x, y = position
     return 0 <= x < BOARD_COLS and 0 <= y < BOARD_ROWS
 
 
 def occupancy(pieces: Iterable[Piece]) -> dict[BoardPosition, Piece]:
+    """Index pieces by position for efficient movement generation."""
     return {piece.position: piece for piece in pieces}
 
 
@@ -137,6 +145,8 @@ def _xiangqi_moves(
         return _sliding_moves(piece, board, ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
     if piece.kind == "cannon":
+        # Before a screen, empty intersections are ordinary moves. After exactly
+        # one screen, only the first occupied intersection can be captured.
         moves: list[BoardPosition] = []
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             step = 1
@@ -159,6 +169,7 @@ def _xiangqi_moves(
         return moves
 
     if piece.kind == "horse":
+        # Each destination records the adjacent "leg" that must remain empty.
         horse_patterns = (
             ((1, 0), (2, 1)),
             ((1, 0), (2, -1)),
@@ -177,6 +188,8 @@ def _xiangqi_moves(
         ]
 
     if piece.kind == "elephant":
+        # This variant permits crossing the river but preserves the blocked-eye
+        # rule at the diagonal midpoint.
         moves = []
         for dx, dy in ((2, 2), (2, -2), (-2, 2), (-2, -2)):
             target = (x + dx, y + dy)
@@ -205,6 +218,7 @@ def _xiangqi_moves(
     if piece.kind == "bing":
         forward = -1 if piece.side == "red" else 1
         pawn_targets = [(x, y + forward)]
+        # A soldier gains sideways movement after crossing, but never retreats.
         crossed_river = y <= 4 if piece.side == "red" else y >= 5
         if crossed_river:
             pawn_targets.extend(((x - 1, y), (x + 1, y)))

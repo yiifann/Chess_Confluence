@@ -7,9 +7,11 @@ Side = Literal["red", "black"]
 
 
 class CatalogItem(TypedDict):
+    """Schema shared by the setup shop, renderer, and AI setup request."""
+
     game: Game
     kind: str
-    cost: int
+    cost: float
     limit: int
     images: dict[Side, str]
 
@@ -32,7 +34,9 @@ STARTING_BUDGET = 40
 MAX_BOUGHT_PIECES = 20
 CHESS_KING_COST = 3
 
-# Deployment zones are expressed as board row indices.
+# Prices are expressed as floats because the balancing scale permits 0.5 points.
+
+# Deployment zones are row indices from the top; Red therefore uses larger rows.
 DEPLOYMENT_ROWS = {
     "red": {6, 7, 8, 9},
     "black": {0, 1, 2, 3},

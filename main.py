@@ -1,4 +1,4 @@
-"""Hybrid Chess Demo: Chinese chess meets international chess."""
+"""Pygame interface and state controller for Chess Confluence."""
 
 from __future__ import annotations
 
@@ -13,6 +13,15 @@ except ImportError:  # Friendly message when launched before dependencies exist.
     print("pygame is missing. Run: python -m pip install -r requirements.txt")
     raise SystemExit(1)
 
+from ai import (
+    CatalogOption,
+    GameObservation,
+    GamePolicy,
+    HeuristicPolicy,
+    PieceView,
+    SetupRequest,
+    enumerate_legal_actions,
+)
 from i18n import LANGUAGE_LABELS, Language, translate
 from pieces import (
     BoardPosition,
@@ -47,7 +56,12 @@ from settings import (
 PixelPosition = tuple[int, int]
 GameState = Literal["menu", "setup", "handoff", "playing", "game_over"]
 HandoffTarget = Literal["black", "play"]
+GameMode = Literal["single", "local"]
 ImageKey = tuple[Game, str, Side]
+
+AI_SIDE: Side = "black"
+AI_MOVE_DELAY_MS = 450
+PROMOTION_OPTIONS = ("queen", "rook", "bishop", "knight")
 
 
 @dataclass(frozen=True)
@@ -142,9 +156,19 @@ def find_cjk_font() -> str | None:
 
 
 class HybridChessGame:
-    def __init__(self) -> None:
+    """Own the live match state and coordinate Pygame, rules, and AI policies.
+
+    Movement generation remains in ``pieces.py`` and policy decisions remain in
+    ``ai.py``. This controller is the only layer that mutates a live match.
+    """
+
+    def __init__(self, ai_policy: GamePolicy | None = None) -> None:
         pygame.init()
         self.language: Language = "zh"
+        self.game_mode: GameMode = "single"
+        self.ai_policy: GamePolicy = (
+            ai_policy if ai_policy is not None else HeuristicPolicy()
+        )
         pygame.display.set_caption(self.tr("window_title"))
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         self.clock = pygame.time.Clock()
@@ -178,6 +202,7 @@ class HybridChessGame:
                 self.images[(item["game"], item["kind"], side)] = image
 
     def is_checked(self, side: Side) -> bool:
+        """Report whether the leader is capturable next turn for UI feedback."""
         king_position = self.kings[side].position
         return any(
             piece.side != side and king_position in legal_moves(piece, self.pieces)
@@ -185,13 +210,14 @@ class HybridChessGame:
         )
 
     def reset_match(self) -> None:
+        """Restore a fresh Red-first setup while preserving language and mode."""
         self.pieces: list[Piece] = [
             Piece(1, "xiangqi", "king", "red", (4, 9)),
             Piece(2, "xiangqi", "king", "black", (4, 0)),
         ]
         self.kings: dict[Side, Piece] = {"red": self.pieces[0], "black": self.pieces[1]}
         self.next_piece_id = 3
-        self.budgets: dict[Side, int] = {
+        self.budgets: dict[Side, float] = {
             "red": STARTING_BUDGET,
             "black": STARTING_BUDGET,
         }
@@ -205,6 +231,7 @@ class HybridChessGame:
         self.turn: Side = "red"
         self.winner: Side | None = None
         self.pending_promotion: Piece | None = None
+        self.ai_move_due_at: int | None = None
         self.handoff_target: HandoffTarget = "black"
         self.status = self.tr("status.setup.red")
 
@@ -214,6 +241,7 @@ class HybridChessGame:
         while self.running:
             for event in pygame.event.get():
                 self.handle_event(event)
+            self.update_ai()
             self.draw()
             pygame.display.flip()
             self.clock.tick(FPS)
@@ -246,6 +274,10 @@ class HybridChessGame:
             self.handle_game_over_click(event.pos)
 
     def handle_menu_click(self, position: PixelPosition) -> None:
+        for game_mode, rect in self.game_mode_rects().items():
+            if rect.collidepoint(position):
+                self.game_mode = game_mode
+                return
         for language, rect in self.language_rects().items():
             if rect.collidepoint(position):
                 self.language = language
@@ -315,6 +347,9 @@ class HybridChessGame:
 
     def handle_play_click(self, position: PixelPosition, button: int) -> None:
         if button != 1:
+            return
+        if self.game_mode == "single" and self.turn == AI_SIDE:
+            self.status = self.tr("status.ai_thinking")
             return
         if self.pending_promotion is not None:
             for kind, rect in self.promotion_rects().items():
@@ -453,6 +488,7 @@ class HybridChessGame:
         )
 
     def finish_setup(self) -> None:
+        """Leave setup through the single-player or privacy-handoff branch."""
         king = self.kings[self.setup_side]
         if not valid_king_setup_position(king, king.position):
             self.status = self.tr(f"status.king_place_{king.game}")
@@ -460,11 +496,96 @@ class HybridChessGame:
             return
         self.selected_catalog_index = None
         self.selected_setup_king = False
+        if self.game_mode == "single" and self.setup_side == "red":
+            self.setup_ai_opponent()
+            self.setup_side = "red"
+            self.turn = "red"
+            self.state = "playing"
+            self.status = self.tr("status.ai_ready")
+            return
         self.state = "handoff"
         if self.setup_side == "red":
             self.handoff_target = "black"
         else:
             self.handoff_target = "play"
+
+    def setup_ai_opponent(self) -> None:
+        """Ask the active policy for a setup and apply only validated choices."""
+        side: Side = AI_SIDE
+        request = SetupRequest(
+            side=side,
+            budget=STARTING_BUDGET,
+            max_pieces=MAX_BOUGHT_PIECES,
+            catalog=tuple(
+                CatalogOption(item["game"], item["kind"], item["cost"], item["limit"])
+                for item in PIECE_CATALOG
+                if item["limit"] > 0
+            ),
+            deployment_rows=tuple(sorted(DEPLOYMENT_ROWS[side])),
+            # Secret setup policies must not receive the human army's positions.
+            occupied=(),
+            chess_king_cost=CHESS_KING_COST,
+            board_columns=BOARD_COLS,
+            board_rows=BOARD_ROWS,
+        )
+        plan = self.ai_policy.choose_setup(request)
+        king = self.kings[side]
+        # Treat policy output as untrusted: future model adapters may emit an
+        # invalid leader choice while exploring or loading an incompatible model.
+        king.game = (
+            plan.king_game if plan.king_game in ("chess", "xiangqi") else "xiangqi"
+        )
+        king_cost = CHESS_KING_COST if king.game == "chess" else 0
+        if (
+            king_cost > STARTING_BUDGET
+            or not valid_king_setup_position(king, plan.king_position)
+            or self.piece_at(plan.king_position) not in (None, king)
+        ):
+            king.game = "xiangqi"
+            king.position = (4, 0)
+            king_cost = 0
+        else:
+            king.position = plan.king_position
+
+        self.budgets[side] = STARTING_BUDGET - king_cost
+        for placement in plan.placements:
+            matching_item = next(
+                (
+                    item
+                    for item in PIECE_CATALOG
+                    if item["limit"] > 0
+                    and item["game"] == placement.game
+                    and item["kind"] == placement.kind
+                ),
+                None,
+            )
+            if matching_item is None:
+                continue
+            key = (side, matching_item["game"], matching_item["kind"])
+            # Validate every placement independently so one malformed action
+            # cannot invalidate the rest of an otherwise usable setup plan.
+            if (
+                placement.position[1] not in DEPLOYMENT_ROWS[side]
+                or not (0 <= placement.position[0] < BOARD_COLS)
+                or self.piece_at(placement.position) is not None
+                or self.purchase_counts.get(key, 0) >= matching_item["limit"]
+                or self.bought_totals[side] >= MAX_BOUGHT_PIECES
+                or self.budgets[side] < matching_item["cost"]
+            ):
+                continue
+            self.pieces.append(
+                Piece(
+                    self.next_piece_id,
+                    matching_item["game"],
+                    matching_item["kind"],
+                    side,
+                    placement.position,
+                )
+            )
+            self.next_piece_id += 1
+            self.budgets[side] -= matching_item["cost"]
+            self.purchase_counts[key] = self.purchase_counts.get(key, 0) + 1
+            self.bought_totals[side] += 1
 
     # ---------- Battle logic ----------
 
@@ -472,6 +593,15 @@ class HybridChessGame:
         piece = self.selected_piece
         if piece is None:
             return
+        self.execute_move(piece, target)
+
+    def execute_move(
+        self,
+        piece: Piece,
+        target: BoardPosition,
+        promotion: str | None = None,
+    ) -> None:
+        """Apply a validated human or policy action to the live match."""
         captured = self.piece_at(target)
         if captured is not None:
             self.pieces.remove(captured)
@@ -490,14 +620,93 @@ class HybridChessGame:
 
         final_row = 0 if piece.side == "red" else BOARD_ROWS - 1
         if piece.game == "chess" and piece.kind == "pawn" and target[1] == final_row:
+            if promotion in PROMOTION_OPTIONS:
+                piece.kind = promotion
+                self.end_turn()
+                return
             self.pending_promotion = piece
             self.status = self.tr("status.promote")
             return
         self.end_turn()
 
     def end_turn(self) -> None:
+        """Advance the turn and schedule, but do not block on, an AI response."""
         self.turn = "black" if self.turn == "red" else "red"
         self.status = self.tr("status.turn", side=self.side_name(self.turn))
+        if self.game_mode == "single" and self.turn == AI_SIDE:
+            self.ai_move_due_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
+            self.status = self.tr("status.ai_thinking")
+        else:
+            self.ai_move_due_at = None
+
+    def game_observation(self) -> GameObservation:
+        """Create the immutable state passed to AI policies."""
+        return GameObservation.from_pieces(
+            self.turn,
+            self.pieces,
+            BOARD_COLS,
+            BOARD_ROWS,
+        )
+
+    def update_ai(self) -> None:
+        """Run a due AI turn from the frame loop, keeping the UI responsive."""
+        if (
+            self.game_mode != "single"
+            or self.state != "playing"
+            or self.turn != AI_SIDE
+            or self.pending_promotion is not None
+        ):
+            return
+        if self.ai_move_due_at is None:
+            self.ai_move_due_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
+            return
+        if pygame.time.get_ticks() < self.ai_move_due_at:
+            return
+        self.perform_ai_turn()
+
+    def perform_ai_turn(self) -> None:
+        """Request, validate, and execute one AI action immediately."""
+        observation = self.game_observation()
+        legal_actions = enumerate_legal_actions(observation, AI_SIDE)
+        if not legal_actions:
+            self.winner = "red"
+            self.state = "game_over"
+            self.status = self.tr("status.ai_no_moves")
+            self.ai_move_due_at = None
+            return
+        action = self.ai_policy.choose_move(observation, legal_actions)
+        # An RL adapter can return an out-of-mask action. Falling back keeps the
+        # live game valid while allowing the adapter to log the model error.
+        if action not in legal_actions:
+            action = legal_actions[0]
+        piece = next(
+            live_piece
+            for live_piece in self.pieces
+            if live_piece.piece_id == action.piece_id
+        )
+        promotion = None
+        final_row = BOARD_ROWS - 1
+        if (
+            piece.game == "chess"
+            and piece.kind == "pawn"
+            and action.target[1] == final_row
+        ):
+            promotion = self.ai_policy.choose_promotion(
+                observation,
+                PieceView.from_piece(piece),
+                PROMOTION_OPTIONS,
+            )
+            if promotion not in PROMOTION_OPTIONS:
+                promotion = "queen"
+        description = self.describe_piece(piece)
+        self.execute_move(piece, action.target, promotion)
+        if self.state == "playing":
+            self.status = self.tr(
+                "status.ai_moved",
+                piece=description,
+                column=action.target[0] + 1,
+                row=action.target[1] + 1,
+            )
 
     # ---------- Lookup and coordinates ----------
 
@@ -551,7 +760,14 @@ class HybridChessGame:
 
     @staticmethod
     def menu_start_rect() -> pygame.Rect:
-        return pygame.Rect(WINDOW_WIDTH // 2 - 190, 515, 380, 64)
+        return pygame.Rect(WINDOW_WIDTH // 2 - 190, 565, 380, 64)
+
+    @staticmethod
+    def game_mode_rects() -> dict[GameMode, pygame.Rect]:
+        return {
+            "single": pygame.Rect(WINDOW_WIDTH // 2 - 286, 450, 280, 42),
+            "local": pygame.Rect(WINDOW_WIDTH // 2 + 6, 450, 280, 42),
+        }
 
     @staticmethod
     def language_rects() -> dict[Language, pygame.Rect]:
@@ -560,7 +776,7 @@ class HybridChessGame:
         total_width = len(languages) * width + (len(languages) - 1) * gap
         start_x = (WINDOW_WIDTH - total_width) // 2
         return {
-            language: pygame.Rect(start_x + index * (width + gap), 455, width, 42)
+            language: pygame.Rect(start_x + index * (width + gap), 505, width, 42)
             for index, language in enumerate(languages)
         }
 
@@ -682,12 +898,22 @@ class HybridChessGame:
                 LANGUAGE_LABELS[language],
                 active=language == self.language,
             )
-        self.draw_button(self.menu_start_rect(), self.tr("menu.start"), active=True)
+        for game_mode, rect in self.game_mode_rects().items():
+            self.draw_button(
+                rect,
+                self.tr(f"menu.mode.{game_mode}"),
+                active=game_mode == self.game_mode,
+            )
+        self.draw_button(
+            self.menu_start_rect(),
+            self.tr(f"menu.start.{self.game_mode}"),
+            active=True,
+        )
         self.draw_text(
             self.tr("menu.tagline"),
             self.fonts["small"],
             COLORS["muted"],
-            (640, 630),
+            (640, 660),
             center=True,
         )
         self.draw_text(
@@ -1286,6 +1512,13 @@ class HybridChessGame:
                 self.fonts["body"],
                 COLORS["text"],
                 (SIDEBAR_X + 28, 195),
+            )
+        if self.game_mode == "single":
+            self.draw_text(
+                self.tr("play.ai_opponent"),
+                self.fonts["small"],
+                COLORS["accent"],
+                (SIDEBAR_X + 28, 235),
             )
 
         pygame.draw.line(
