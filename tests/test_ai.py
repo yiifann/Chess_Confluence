@@ -13,11 +13,11 @@ from pieces import Piece, Side, valid_king_setup_position
 from settings import (
     BOARD_COLS,
     BOARD_ROWS,
-    CHESS_KING_COST,
+    CHESS_KING_COST_UNITS,
     DEPLOYMENT_ROWS,
     MAX_BOUGHT_PIECES,
-    PIECE_CATALOG,
-    STARTING_BUDGET,
+    PIECE_DEFINITIONS,
+    STARTING_BUDGET_UNITS,
 )
 
 
@@ -28,16 +28,16 @@ def observation(pieces: list[Piece], turn: Side = "black") -> GameObservation:
 def test_heuristic_setup_respects_budget_limits_and_deployment_zone() -> None:
     request = SetupRequest(
         side="black",
-        budget=STARTING_BUDGET,
+        budget_units=STARTING_BUDGET_UNITS,
         max_pieces=MAX_BOUGHT_PIECES,
         catalog=tuple(
-            CatalogOption(item["game"], item["kind"], item["cost"], item["limit"])
-            for item in PIECE_CATALOG
-            if item["limit"]
+            CatalogOption(item.game, item.kind, item.cost_units, item.limit)
+            for item in PIECE_DEFINITIONS
+            if item.limit
         ),
         deployment_rows=tuple(sorted(DEPLOYMENT_ROWS["black"])),
         occupied=((4, 9),),
-        chess_king_cost=CHESS_KING_COST,
+        chess_king_cost_units=CHESS_KING_COST_UNITS,
         board_columns=BOARD_COLS,
         board_rows=BOARD_ROWS,
     )
@@ -53,10 +53,10 @@ def test_heuristic_setup_respects_budget_limits_and_deployment_zone() -> None:
     option_by_key = {(option.game, option.kind): option for option in request.catalog}
     counts = Counter((item.game, item.kind) for item in plan.placements)
     assert all(count <= option_by_key[key].limit for key, count in counts.items())
-    total_cost = sum(
-        option_by_key[(item.game, item.kind)].cost for item in plan.placements
-    ) + (CHESS_KING_COST if plan.king_game == "chess" else 0)
-    assert total_cost <= STARTING_BUDGET
+    total_cost_units = sum(
+        option_by_key[(item.game, item.kind)].cost_units for item in plan.placements
+    ) + (CHESS_KING_COST_UNITS if plan.king_game == "chess" else 0)
+    assert total_cost_units <= STARTING_BUDGET_UNITS
     assert len(plan.placements) <= MAX_BOUGHT_PIECES
 
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from pieces import BoardPosition, Game, Piece, Side, legal_moves
+from settings import PIECE_DEFINITION_BY_KEY
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ class CatalogOption:
 
     game: Game
     kind: str
-    cost: float
+    cost_units: int
     limit: int
 
 
@@ -88,12 +89,12 @@ class SetupRequest:
     """Rules and available resources for one side's secret setup."""
 
     side: Side
-    budget: float
+    budget_units: int
     max_pieces: int
     catalog: tuple[CatalogOption, ...]
     deployment_rows: tuple[int, ...]
     occupied: tuple[BoardPosition, ...]
-    chess_king_cost: float
+    chess_king_cost_units: int
     board_columns: int
     board_rows: int
 
@@ -153,23 +154,6 @@ def enumerate_legal_actions(
     return tuple(sorted(actions, key=lambda action: (action.piece_id, action.target)))
 
 
-PIECE_VALUES: dict[tuple[Game, str], float] = {
-    ("xiangqi", "bing"): 1.0,
-    ("xiangqi", "advisor"): 1.5,
-    ("xiangqi", "elephant"): 2.0,
-    ("xiangqi", "horse"): 2.5,
-    ("xiangqi", "cannon"): 4.5,
-    ("xiangqi", "rook"): 6.0,
-    ("xiangqi", "king"): 1000.0,
-    ("chess", "pawn"): 1.0,
-    ("chess", "knight"): 3.0,
-    ("chess", "bishop"): 3.5,
-    ("chess", "rook"): 6.0,
-    ("chess", "queen"): 10.0,
-    ("chess", "king"): 1000.0,
-}
-
-
 class HeuristicPolicy:
     """Small, fast opponent using setup priorities and one-ply move scoring."""
 
@@ -179,11 +163,12 @@ class HeuristicPolicy:
     def choose_setup(self, request: SetupRequest) -> SetupPlan:
         """Build a varied, budget-aware army and place it by tactical role."""
         use_chess_king = (
-            request.budget >= request.chess_king_cost and self.random.random() < 0.3
+            request.budget_units >= request.chess_king_cost_units
+            and self.random.random() < 0.3
         )
         king_game: Game = "chess" if use_chess_king else "xiangqi"
-        remaining = request.budget - (
-            request.chess_king_cost if king_game == "chess" else 0
+        remaining_units = request.budget_units - (
+            request.chess_king_cost_units if king_game == "chess" else 0
         )
 
         occupied = set(request.occupied)
@@ -213,25 +198,28 @@ class HeuristicPolicy:
         counts: dict[tuple[Game, str], int] = {}
         for key in priorities:
             option = option_by_key.get(key)
-            if option is None or option.cost > remaining:
+            if option is None or option.cost_units > remaining_units:
                 continue
             if len(selected) >= request.max_pieces:
                 break
             selected.append(option)
             counts[key] = 1
-            remaining -= option.cost
+            remaining_units -= option.cost_units
 
         # Spend small remainders without exceeding per-kind or total-piece limits.
         affordable = sorted(
             request.catalog,
-            key=lambda option: (option.cost, -PIECE_VALUES[(option.game, option.kind)]),
+            key=lambda option: (
+                option.cost_units,
+                -_piece_value_units(option.game, option.kind),
+            ),
         )
         while len(selected) < request.max_pieces:
             option = next(
                 (
                     candidate
                     for candidate in affordable
-                    if candidate.cost <= remaining
+                    if candidate.cost_units <= remaining_units
                     and counts.get((candidate.game, candidate.kind), 0)
                     < candidate.limit
                 ),
@@ -242,7 +230,7 @@ class HeuristicPolicy:
             selected.append(option)
             key = (option.game, option.kind)
             counts[key] = counts.get(key, 0) + 1
-            remaining -= option.cost
+            remaining_units -= option.cost_units
 
         placements: list[SetupPlacement] = []
         for option in selected:
@@ -384,7 +372,7 @@ class HeuristicPolicy:
         # Tiny noise prevents identical armies from repeating the same tied line.
         score = self.random.uniform(-0.025, 0.025)
         if captured is not None:
-            score += PIECE_VALUES[(captured.game, captured.kind)] * 12
+            score += _piece_value_units(captured.game, captured.kind) * 6
             if captured.kind == "king":
                 return score
 
@@ -417,7 +405,7 @@ class HeuristicPolicy:
             score -= 500
         threatened_value = max(
             (
-                PIECE_VALUES[(victim.game, victim.kind)]
+                _piece_value_units(victim.game, victim.kind)
                 for attacker, target in enemy_replies
                 for victim in pieces
                 if victim.side == moving_piece.side
@@ -426,7 +414,7 @@ class HeuristicPolicy:
             ),
             default=0,
         )
-        score -= threatened_value * 0.3
+        score -= threatened_value * 0.15
         return score
 
 
@@ -452,3 +440,8 @@ def _forward_progress(piece: Piece, board_rows: int) -> int:
     return (
         board_rows - 1 - piece.position[1] if piece.side == "red" else piece.position[1]
     )
+
+
+def _piece_value_units(game: Game, kind: str) -> int:
+    """Read integer half-point value from the canonical piece catalog."""
+    return PIECE_DEFINITION_BY_KEY[(game, kind)].value_units

@@ -86,6 +86,9 @@ python main.py
 ### 汇总
 
 - 不判定将军、将死、飞将。
+- 允许走入受攻击位置；胜负仍以实际吃掉将/帅为准。
+- 当前行动方没有任何合法走法时判负，该规则同时适用于单人和双人模式。
+- 同一局面第三次出现，或连续 100 个半回合没有吃子及兵/卒移动时，判为和棋。
 - 内置简单电脑 AI；暂不支持联网、音效和存档。
 
 ### 国际象棋
@@ -138,14 +141,17 @@ move outputs before changing live state. Inject a replacement with
 
 The code is split by responsibility:
 
-- `main.py`: application states, input, rendering, and validated state changes.
+- `main.py`: Pygame screens, input, rendering, and AI-turn scheduling.
+- `engine.py`: authoritative match state, setup validation, actions, and results.
 - `pieces.py`: board model and movement rules, with no Pygame dependency.
 - `ai.py`: AI contract, snapshots/actions, and the built-in heuristic policy.
-- `settings.py`: board constants, prices, limits, colors, and assets.
+- `settings.py`: board constants, integer half-point prices, limits, colors, and
+  assets. One internal cost unit equals 0.5 displayed points.
 - `i18n.py`: Chinese, English, and French message catalogs.
 - `tests/`: rule, localization, and AI regression tests.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for state flow, invariants,
+See [docs/RULES.md](docs/RULES.md) for exact variant and terminal rules. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for state flow, invariants,
 extension instructions, and an RL-policy adapter example.
 
 Run the automated checks from the project root:
@@ -153,8 +159,8 @@ Run the automated checks from the project root:
 ```bash
 python -m pip install pytest ruff mypy
 python -m pytest -q -p no:cacheprovider
-ruff check --no-cache main.py ai.py pieces.py settings.py i18n.py tests
-ruff format --check --no-cache main.py ai.py pieces.py settings.py i18n.py tests
-python -m mypy main.py ai.py pieces.py settings.py i18n.py tests \
+ruff check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
+ruff format --check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
+python -m mypy main.py engine.py ai.py pieces.py settings.py i18n.py tests \
   --ignore-missing-imports --cache-dir=NUL --no-error-summary
 ```

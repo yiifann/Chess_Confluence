@@ -4,18 +4,22 @@ This document describes the current demo's module boundaries, runtime flow, and
 extension points. It is intended for contributors adding pieces, interfaces, or
 AI policies.
 
+The normative gameplay rules and terminal precedence are documented separately
+in [RULES.md](RULES.md).
+
 ## Module map
 
 | Module | Responsibility |
 |---|---|
-| `main.py` | Pygame application, state transitions, input, rendering, and applying validated actions |
+| `main.py` | Pygame screens, input, rendering, and AI-turn scheduling |
+| `engine.py` | Authoritative match state, setup validation, action application, history, and terminal results |
 | `pieces.py` | Piece data model, board bounds, setup zones, and movement generation |
 | `ai.py` | Renderer-independent policy contract, immutable observations/actions, and the heuristic AI |
 | `settings.py` | Board geometry, colors, budgets, piece prices, limits, and asset paths |
 | `i18n.py` | Chinese, English, and French UI message catalogs |
 | `tests/` | Movement, localization, and AI policy regression tests |
 
-The rules and AI modules deliberately do not import Pygame. This keeps them
+The engine, rules, and AI modules deliberately do not import Pygame. This keeps them
 usable in unit tests, headless simulations, and future training environments.
 
 ## Application state flow
@@ -35,9 +39,10 @@ playing --> opposing king captured --> game over
 game over --> new setup or menu
 ```
 
-`HybridChessGame` owns the live mutable state. Event handlers select an action;
-`execute_move()` is the common mutation path for both human and AI moves. This
-ensures captures, promotion, win detection, and turn changes behave identically.
+`GameEngine` owns the live mutable match state. `HybridChessGame` owns only UI
+state such as the current screen and selection. Event handlers and AI policies
+both submit actions to `GameEngine.apply_action()`, ensuring captures, promotion,
+win detection, history, and turn changes behave identically.
 
 ## Board and rule invariants
 
@@ -48,11 +53,12 @@ ensures captures, promotion, win detection, and turn changes behave identically.
 - Every live piece has a unique `piece_id` and one occupied intersection.
 - While both leaders are live, `pieces` contains the same objects referenced by
   `kings`.
-- Costs use `float` values but are restricted by design to whole or half points.
+- Costs and material values use integer half-point units (`1` unit = `0.5`
+  displayed points). UI code converts units with `format_points`, which keeps
+  budget arithmetic exact while preserving familiar values such as `4.5`.
 - Victory is immediate capture of the opposing king/general. Checkmate,
   castling, en passant, and the Xiangqi flying-general rule are not part of this
-  demo. If the AI has no legal action, it forfeits; local mode does not otherwise
-  adjudicate stalemate.
+  demo. A side with no legal action loses in both game modes.
 - A Xiangqi general remains confined to its 3×3 palace. A chess king may be
   deployed anywhere in its side's four setup rows.
 
@@ -76,9 +82,9 @@ make observation/action encoding repeatable for an RL adapter.
 
 During secret setup, the Black policy receives the catalog and deployment rules
 but not Red's piece positions. During play it receives the complete revealed
-board. The controller validates setup placements, costs, limits, movement, and
+board. The engine validates setup placements, costs, limits, movement, and
 promotion output before mutating live state. An invalid move falls back to the
-first legal action rather than corrupting the match.
+first legal action at the UI-policy boundary rather than corrupting the match.
 
 ### Replacing the heuristic with an RL model
 
@@ -125,11 +131,12 @@ adapter. The core policy types should remain framework-neutral.
 
 ### Add or rebalance a piece
 
-1. Update `PIECE_CATALOG` in `settings.py`.
+1. Update `PIECE_DEFINITIONS` in `settings.py`.
 2. Add or modify movement generation in `pieces.py`.
 3. Add its movement preview and localized descriptions in `main.py` and
    `i18n.py`.
-4. Update `PIECE_VALUES` and setup priorities in `ai.py`.
+4. Set the definition's AI material `value_units` and update setup priorities in
+   `ai.py`.
 5. Add focused movement and AI tests.
 
 ### Add a language
@@ -146,9 +153,9 @@ From the repository root:
 
 ```bash
 python -m pytest -q -p no:cacheprovider
-ruff check --no-cache main.py ai.py pieces.py settings.py i18n.py tests
-ruff format --check --no-cache main.py ai.py pieces.py settings.py i18n.py tests
-python -m mypy main.py ai.py pieces.py settings.py i18n.py tests \
+ruff check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
+ruff format --check --no-cache main.py engine.py ai.py pieces.py settings.py i18n.py tests
+python -m mypy main.py engine.py ai.py pieces.py settings.py i18n.py tests \
   --ignore-missing-imports --cache-dir=NUL --no-error-summary
 ```
 

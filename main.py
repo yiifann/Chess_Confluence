@@ -22,46 +22,45 @@ from ai import (
     SetupRequest,
     enumerate_legal_actions,
 )
+from engine import PROMOTION_OPTIONS, GameEngine, GameResult, MoveOutcome
 from i18n import LANGUAGE_LABELS, Language, translate
 from pieces import (
     BoardPosition,
     Game,
     Piece,
     Side,
-    legal_moves,
-    valid_king_setup_position,
 )
 from settings import (
     BOARD_COLS,
     BOARD_ORIGIN_X,
     BOARD_ORIGIN_Y,
     BOARD_ROWS,
-    CHESS_KING_COST,
+    CHESS_KING_COST_UNITS,
     COLORS,
     DEPLOYMENT_ROWS,
     FPS,
     GRID_SIZE,
     MAX_BOUGHT_PIECES,
-    PIECE_CATALOG,
+    PIECE_DEFINITIONS,
     PIECE_RADIUS,
     SIDEBAR_WIDTH,
     SIDEBAR_X,
-    STARTING_BUDGET,
+    STARTING_BUDGET_UNITS,
     TEAM_COLORS,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
-    CatalogItem,
+    PieceDefinition,
+    format_points,
 )
 
 PixelPosition = tuple[int, int]
-GameState = Literal["menu", "setup", "handoff", "playing", "game_over"]
+ScreenState = Literal["menu", "setup", "handoff", "playing", "game_over"]
 HandoffTarget = Literal["black", "play"]
 GameMode = Literal["single", "local"]
 ImageKey = tuple[Game, str, Side]
 
 AI_SIDE: Side = "black"
 AI_MOVE_DELAY_MS = 450
-PROMOTION_OPTIONS = ("queen", "rook", "bishop", "knight")
 
 
 @dataclass(frozen=True)
@@ -156,16 +155,17 @@ def find_cjk_font() -> str | None:
 
 
 class HybridChessGame:
-    """Own the live match state and coordinate Pygame, rules, and AI policies.
+    """Coordinate Pygame views, user intent, and AI policy requests.
 
-    Movement generation remains in ``pieces.py`` and policy decisions remain in
-    ``ai.py``. This controller is the only layer that mutates a live match.
+    ``GameEngine`` owns and validates live match mutations; this class keeps
+    transient interface state such as selections, screens, and AI timing.
     """
 
     def __init__(self, ai_policy: GamePolicy | None = None) -> None:
         pygame.init()
         self.language: Language = "zh"
         self.game_mode: GameMode = "single"
+        self.engine = GameEngine()
         self.ai_policy: GamePolicy = (
             ai_policy if ai_policy is not None else HeuristicPolicy()
         )
@@ -184,7 +184,7 @@ class HybridChessGame:
             "title": pygame.font.Font(self.font_path, 48),
         }
         self.running = True
-        self.state: GameState = "menu"
+        self.state: ScreenState = "menu"
         self.load_images()
         self.reset_match()
 
@@ -192,48 +192,58 @@ class HybridChessGame:
         """Load each game-specific piece image, leaving fallback drawing available."""
         self.images: dict[ImageKey, pygame.Surface] = {}
         assets_dir = Path(__file__).parent / "assets"
-        for item in PIECE_CATALOG:
+        for item in PIECE_DEFINITIONS:
             for side in ("red", "black"):
-                image_path = assets_dir / item["images"][side]
+                image_path = assets_dir / item.images[side]
                 try:
                     image = pygame.image.load(image_path).convert_alpha()
                 except (FileNotFoundError, pygame.error):
                     continue
-                self.images[(item["game"], item["kind"], side)] = image
+                self.images[(item.game, item.kind, side)] = image
 
     def is_checked(self, side: Side) -> bool:
         """Report whether the leader is capturable next turn for UI feedback."""
-        king_position = self.kings[side].position
-        return any(
-            piece.side != side and king_position in legal_moves(piece, self.pieces)
-            for piece in self.pieces
-        )
+        return self.engine.is_in_check(side)
 
     def reset_match(self) -> None:
         """Restore a fresh Red-first setup while preserving language and mode."""
-        self.pieces: list[Piece] = [
-            Piece(1, "xiangqi", "king", "red", (4, 9)),
-            Piece(2, "xiangqi", "king", "black", (4, 0)),
-        ]
-        self.kings: dict[Side, Piece] = {"red": self.pieces[0], "black": self.pieces[1]}
-        self.next_piece_id = 3
-        self.budgets: dict[Side, float] = {
-            "red": STARTING_BUDGET,
-            "black": STARTING_BUDGET,
-        }
-        self.purchase_counts: dict[tuple[Side, Game, str], int] = {}
-        self.bought_totals: dict[Side, int] = {"red": 0, "black": 0}
+        self.engine.reset()
         self.setup_side: Side = "red"
         self.selected_catalog_index: int | None = None
         self.selected_setup_king = False
         self.selected_piece: Piece | None = None
         self.available_moves: list[BoardPosition] = []
-        self.turn: Side = "red"
-        self.winner: Side | None = None
-        self.pending_promotion: Piece | None = None
         self.ai_move_due_at: int | None = None
         self.handoff_target: HandoffTarget = "black"
         self.status = self.tr("status.setup.red")
+
+    @property
+    def pieces(self) -> list[Piece]:
+        return self.engine.state.pieces
+
+    @property
+    def kings(self) -> dict[Side, Piece]:
+        return self.engine.state.kings
+
+    @property
+    def budget_units(self) -> dict[Side, int]:
+        return self.engine.state.budget_units
+
+    @property
+    def purchase_counts(self) -> dict[tuple[Side, Game, str], int]:
+        return self.engine.state.purchase_counts
+
+    @property
+    def bought_totals(self) -> dict[Side, int]:
+        return self.engine.state.bought_totals
+
+    @property
+    def turn(self) -> Side:
+        return self.engine.state.turn
+
+    @property
+    def pending_promotion(self) -> Piece | None:
+        return self.engine.pending_promotion()
 
     # ---------- Main loop and events ----------
 
@@ -298,7 +308,7 @@ class HybridChessGame:
                     if self.can_buy(index):
                         self.selected_catalog_index = index
                         self.selected_setup_king = False
-                        item = PIECE_CATALOG[index]
+                        item = PIECE_DEFINITIONS[index]
                         self.status = self.tr(
                             "status.catalog_selected",
                             piece=self.catalog_item_name(item),
@@ -341,9 +351,7 @@ class HybridChessGame:
             self.status = self.tr("status.setup.black")
             self.state = "setup"
         else:
-            self.turn = "red"
-            self.status = self.tr("status.play_start")
-            self.state = "playing"
+            self.start_battle("status.play_start")
 
     def handle_play_click(self, position: PixelPosition, button: int) -> None:
         if button != 1:
@@ -354,9 +362,7 @@ class HybridChessGame:
         if self.pending_promotion is not None:
             for kind, rect in self.promotion_rects().items():
                 if rect.collidepoint(position):
-                    self.pending_promotion.kind = kind
-                    self.pending_promotion = None
-                    self.end_turn()
+                    self.finish_engine_move(self.engine.complete_promotion(kind))
                     return
             return
 
@@ -370,7 +376,9 @@ class HybridChessGame:
             return
         if clicked_piece and clicked_piece.side == self.turn:
             self.selected_piece = clicked_piece
-            self.available_moves = legal_moves(clicked_piece, self.pieces)
+            self.available_moves = list(
+                self.engine.legal_moves_for(clicked_piece.piece_id)
+            )
             self.status = self.tr(
                 "status.piece_selected", piece=self.describe_piece(clicked_piece)
             )
@@ -391,42 +399,33 @@ class HybridChessGame:
     # ---------- Setup logic ----------
 
     def can_buy(self, catalog_index: int) -> bool:
-        item = PIECE_CATALOG[catalog_index]
-        count_key = (self.setup_side, item["game"], item["kind"])
-        return (
-            self.budgets[self.setup_side] >= item["cost"]
-            and self.purchase_counts.get(count_key, 0) < item["limit"]
-            and self.bought_totals[self.setup_side] < MAX_BOUGHT_PIECES
+        return self.engine.can_buy(
+            self.setup_side,
+            PIECE_DEFINITIONS[catalog_index],
         )
 
     def select_king_type(self, game: Game) -> None:
-        king = self.kings[self.setup_side]
-        if king.game != game:
-            if game == "chess":
-                if self.budgets[self.setup_side] < CHESS_KING_COST:
-                    self.status = self.tr("status.king_upgrade_unavailable")
-                    return
-                self.budgets[self.setup_side] -= CHESS_KING_COST
-            else:
-                self.budgets[self.setup_side] += CHESS_KING_COST
-            king.game = game
+        outcome = self.engine.set_king_type(self.setup_side, game)
+        if not outcome.accepted:
+            self.status = self.tr("status.king_upgrade_unavailable")
+            return
 
+        king = self.kings[self.setup_side]
         self.selected_catalog_index = None
         self.selected_setup_king = True
         self.status = self.tr("status.king_selected", piece=self.describe_piece(king))
 
     def try_place_king(self, position: BoardPosition) -> None:
         king = self.kings[self.setup_side]
-        if not valid_king_setup_position(king, position):
+        outcome = self.engine.place_king(self.setup_side, position)
+        if outcome.failure == "invalid_position":
             status_key = f"status.king_place_{king.game}"
             self.status = self.tr(status_key)
             return
-        occupant = self.piece_at(position)
-        if occupant is not None and occupant is not king:
+        if outcome.failure == "occupied":
             self.status = self.tr("status.occupied")
             return
 
-        king.position = position
         self.selected_setup_king = False
         self.status = self.tr("status.king_placed", piece=self.describe_piece(king))
 
@@ -434,63 +433,49 @@ class HybridChessGame:
         if self.selected_catalog_index is None:
             self.status = self.tr("status.choose_catalog")
             return
-        if position[1] not in DEPLOYMENT_ROWS[self.setup_side]:
+        item = PIECE_DEFINITIONS[self.selected_catalog_index]
+        outcome = self.engine.buy_piece(self.setup_side, item, position)
+        if outcome.failure == "invalid_position":
             self.status = self.tr("status.deployment_only")
             return
-        if self.piece_at(position) is not None:
+        if outcome.failure == "occupied":
             self.status = self.tr("status.occupied")
             return
-        if not self.can_buy(self.selected_catalog_index):
+        if not outcome.accepted:
             self.status = self.tr("status.cannot_buy")
             self.selected_catalog_index = None
             return
 
-        item = PIECE_CATALOG[self.selected_catalog_index]
-        piece = Piece(
-            self.next_piece_id,
-            item["game"],
-            item["kind"],
-            self.setup_side,
-            position,
-        )
-        self.next_piece_id += 1
-        self.pieces.append(piece)
-        self.budgets[self.setup_side] -= item["cost"]
-        key = (self.setup_side, item["game"], item["kind"])
-        self.purchase_counts[key] = self.purchase_counts.get(key, 0) + 1
-        self.bought_totals[self.setup_side] += 1
         self.status = self.tr(
             "status.placed",
             piece=self.catalog_item_name(item),
-            budget=self.budgets[self.setup_side],
+            budget=format_points(self.budget_units[self.setup_side]),
         )
         if not self.can_buy(self.selected_catalog_index):
             self.selected_catalog_index = None
 
     def try_remove_piece(self, position: BoardPosition) -> None:
-        piece = self.piece_at(position)
-        if piece is None or piece.side != self.setup_side:
+        outcome = self.engine.remove_setup_piece(self.setup_side, position)
+        if outcome.failure == "not_owned":
             self.status = self.tr("status.remove_hint")
             return
-        if piece.kind == "king":
+        if outcome.failure == "king_fixed":
             self.status = self.tr("status.king_fixed")
             return
+        piece = outcome.piece
+        if piece is None:
+            return
         item = self.catalog_item_for(piece)
-        self.pieces.remove(piece)
-        self.budgets[self.setup_side] += item["cost"]
-        key = (piece.side, piece.game, piece.kind)
-        self.purchase_counts[key] -= 1
-        self.bought_totals[self.setup_side] -= 1
         self.status = self.tr(
             "status.removed",
             piece=self.catalog_item_name(item),
-            cost=item["cost"],
+            cost=format_points(outcome.cost_units),
         )
 
     def finish_setup(self) -> None:
         """Leave setup through the single-player or privacy-handoff branch."""
         king = self.kings[self.setup_side]
-        if not valid_king_setup_position(king, king.position):
+        if not self.engine.setup_is_valid(self.setup_side):
             self.status = self.tr(f"status.king_place_{king.game}")
             self.selected_setup_king = True
             return
@@ -499,9 +484,7 @@ class HybridChessGame:
         if self.game_mode == "single" and self.setup_side == "red":
             self.setup_ai_opponent()
             self.setup_side = "red"
-            self.turn = "red"
-            self.state = "playing"
-            self.status = self.tr("status.ai_ready")
+            self.start_battle("status.ai_ready")
             return
         self.state = "handoff"
         if self.setup_side == "red":
@@ -514,78 +497,50 @@ class HybridChessGame:
         side: Side = AI_SIDE
         request = SetupRequest(
             side=side,
-            budget=STARTING_BUDGET,
+            budget_units=STARTING_BUDGET_UNITS,
             max_pieces=MAX_BOUGHT_PIECES,
             catalog=tuple(
-                CatalogOption(item["game"], item["kind"], item["cost"], item["limit"])
-                for item in PIECE_CATALOG
-                if item["limit"] > 0
+                CatalogOption(item.game, item.kind, item.cost_units, item.limit)
+                for item in PIECE_DEFINITIONS
+                if item.limit > 0
             ),
             deployment_rows=tuple(sorted(DEPLOYMENT_ROWS[side])),
             # Secret setup policies must not receive the human army's positions.
             occupied=(),
-            chess_king_cost=CHESS_KING_COST,
+            chess_king_cost_units=CHESS_KING_COST_UNITS,
             board_columns=BOARD_COLS,
             board_rows=BOARD_ROWS,
         )
         plan = self.ai_policy.choose_setup(request)
-        king = self.kings[side]
         # Treat policy output as untrusted: future model adapters may emit an
         # invalid leader choice while exploring or loading an incompatible model.
-        king.game = (
+        king_game: Game = (
             plan.king_game if plan.king_game in ("chess", "xiangqi") else "xiangqi"
         )
-        king_cost = CHESS_KING_COST if king.game == "chess" else 0
-        if (
-            king_cost > STARTING_BUDGET
-            or not valid_king_setup_position(king, plan.king_position)
-            or self.piece_at(plan.king_position) not in (None, king)
-        ):
-            king.game = "xiangqi"
-            king.position = (4, 0)
-            king_cost = 0
-        else:
-            king.position = plan.king_position
+        type_outcome = self.engine.set_king_type(side, king_game)
+        if not type_outcome.accepted:
+            self.engine.set_king_type(side, "xiangqi")
+        position_outcome = self.engine.place_king(side, plan.king_position)
+        if not position_outcome.accepted:
+            self.engine.set_king_type(side, "xiangqi")
+            self.engine.place_king(side, (4, 0))
 
-        self.budgets[side] = STARTING_BUDGET - king_cost
         for placement in plan.placements:
             matching_item = next(
                 (
                     item
-                    for item in PIECE_CATALOG
-                    if item["limit"] > 0
-                    and item["game"] == placement.game
-                    and item["kind"] == placement.kind
+                    for item in PIECE_DEFINITIONS
+                    if item.limit > 0
+                    and item.game == placement.game
+                    and item.kind == placement.kind
                 ),
                 None,
             )
             if matching_item is None:
                 continue
-            key = (side, matching_item["game"], matching_item["kind"])
             # Validate every placement independently so one malformed action
             # cannot invalidate the rest of an otherwise usable setup plan.
-            if (
-                placement.position[1] not in DEPLOYMENT_ROWS[side]
-                or not (0 <= placement.position[0] < BOARD_COLS)
-                or self.piece_at(placement.position) is not None
-                or self.purchase_counts.get(key, 0) >= matching_item["limit"]
-                or self.bought_totals[side] >= MAX_BOUGHT_PIECES
-                or self.budgets[side] < matching_item["cost"]
-            ):
-                continue
-            self.pieces.append(
-                Piece(
-                    self.next_piece_id,
-                    matching_item["game"],
-                    matching_item["kind"],
-                    side,
-                    placement.position,
-                )
-            )
-            self.next_piece_id += 1
-            self.budgets[side] -= matching_item["cost"]
-            self.purchase_counts[key] = self.purchase_counts.get(key, 0) + 1
-            self.bought_totals[side] += 1
+            self.engine.buy_piece(side, matching_item, placement.position)
 
     # ---------- Battle logic ----------
 
@@ -602,42 +557,45 @@ class HybridChessGame:
         promotion: str | None = None,
     ) -> None:
         """Apply a validated human or policy action to the live match."""
-        captured = self.piece_at(target)
-        if captured is not None:
-            self.pieces.remove(captured)
-        piece.position = target
-        piece.moved = True
+        outcome = self.engine.apply_action(piece.piece_id, target, promotion)
         self.selected_piece = None
         self.available_moves = []
+        self.finish_engine_move(outcome)
 
-        if captured is not None and captured.kind == "king":
-            self.winner = piece.side
-            self.status = self.tr(
-                "status.king_captured", side=self.side_name(piece.side)
-            )
-            self.state = "game_over"
-            return
-
-        final_row = 0 if piece.side == "red" else BOARD_ROWS - 1
-        if piece.game == "chess" and piece.kind == "pawn" and target[1] == final_row:
-            if promotion in PROMOTION_OPTIONS:
-                piece.kind = promotion
-                self.end_turn()
-                return
-            self.pending_promotion = piece
+    def finish_engine_move(self, outcome: MoveOutcome) -> None:
+        """Reflect an engine outcome in UI state and AI scheduling."""
+        if outcome.promotion_required:
             self.status = self.tr("status.promote")
             return
-        self.end_turn()
+        if outcome.result is not None:
+            self.show_game_result(outcome.result)
+            return
+        self.schedule_current_turn()
 
-    def end_turn(self) -> None:
-        """Advance the turn and schedule, but do not block on, an AI response."""
-        self.turn = "black" if self.turn == "red" else "red"
+    def start_battle(self, status_key: str) -> None:
+        """Start engine history and enter play unless setup is already terminal."""
+        result = self.engine.start_battle()
+        if result is not None:
+            self.show_game_result(result)
+            return
+        self.state = "playing"
+        self.status = self.tr(status_key)
+        self.ai_move_due_at = None
+
+    def schedule_current_turn(self) -> None:
+        """Update status and schedule, but do not block on, an AI response."""
         self.status = self.tr("status.turn", side=self.side_name(self.turn))
         if self.game_mode == "single" and self.turn == AI_SIDE:
             self.ai_move_due_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
             self.status = self.tr("status.ai_thinking")
         else:
             self.ai_move_due_at = None
+
+    def show_game_result(self, result: GameResult) -> None:
+        """Switch to the game-over view using the engine's terminal reason."""
+        self.state = "game_over"
+        self.ai_move_due_at = None
+        self.status = self.tr(f"game_over.reason.{result.reason}")
 
     def game_observation(self) -> GameObservation:
         """Create the immutable state passed to AI policies."""
@@ -669,10 +627,9 @@ class HybridChessGame:
         observation = self.game_observation()
         legal_actions = enumerate_legal_actions(observation, AI_SIDE)
         if not legal_actions:
-            self.winner = "red"
-            self.state = "game_over"
-            self.status = self.tr("status.ai_no_moves")
-            self.ai_move_due_at = None
+            result = self.engine.adjudicate_current_turn()
+            if result is not None:
+                self.show_game_result(result)
             return
         action = self.ai_policy.choose_move(observation, legal_actions)
         # An RL adapter can return an out-of-mask action. Falling back keeps the
@@ -711,16 +668,14 @@ class HybridChessGame:
     # ---------- Lookup and coordinates ----------
 
     def piece_at(self, position: BoardPosition) -> Piece | None:
-        return next(
-            (piece for piece in self.pieces if piece.position == position), None
-        )
+        return self.engine.piece_at(position)
 
     @staticmethod
-    def catalog_item_for(piece: Piece) -> CatalogItem:
+    def catalog_item_for(piece: Piece) -> PieceDefinition:
         return next(
             item
-            for item in PIECE_CATALOG
-            if item["game"] == piece.game and item["kind"] == piece.kind
+            for item in PIECE_DEFINITIONS
+            if item.game == piece.game and item.kind == piece.kind
         )
 
     def tr(self, key: str, **values: object) -> str:
@@ -729,9 +684,9 @@ class HybridChessGame:
     def side_name(self, side: Side) -> str:
         return self.tr(f"side.{side}")
 
-    def catalog_item_name(self, item: CatalogItem) -> str:
-        game_name = self.tr(f"game.{item['game']}")
-        piece_name = self.tr(f"piece.{item['game']}.{item['kind']}")
+    def catalog_item_name(self, item: PieceDefinition) -> str:
+        game_name = self.tr(f"game.{item.game}")
+        piece_name = self.tr(f"piece.{item.game}.{item.kind}")
         return f"{game_name} · {piece_name}"
 
     def describe_piece(self, piece: Piece) -> str:
@@ -801,8 +756,8 @@ class HybridChessGame:
         item_width, item_height = 145, 50
         start_x, start_y = SIDEBAR_X + 24, 238
         visible_index = 0
-        for catalog_index, item in enumerate(PIECE_CATALOG):
-            if item["limit"] == 0:
+        for catalog_index, item in enumerate(PIECE_DEFINITIONS):
+            if item.limit == 0:
                 continue
             col, row = visible_index % 3, visible_index // 3
             rects[catalog_index] = pygame.Rect(
@@ -870,7 +825,7 @@ class HybridChessGame:
             center=True,
         )
         cards = [
-            ("40", self.tr("menu.budget")),
+            (format_points(STARTING_BUDGET_UNITS), self.tr("menu.budget")),
             ("2", self.tr("menu.rulesets")),
             ("1", self.tr("menu.king")),
         ]
@@ -1073,8 +1028,8 @@ class HybridChessGame:
         self.draw_text(
             self.tr(
                 "setup.budget",
-                budget=self.budgets[self.setup_side],
-                total=STARTING_BUDGET,
+                budget=format_points(self.budget_units[self.setup_side]),
+                total=format_points(STARTING_BUDGET_UNITS),
             ),
             self.fonts["body"],
             COLORS["text"],
@@ -1105,7 +1060,7 @@ class HybridChessGame:
         )
 
         for index, rect in self.catalog_rects().items():
-            item = PIECE_CATALOG[index]
+            item = PIECE_DEFINITIONS[index]
             active = self.can_buy(index)
             selected = self.selected_catalog_index == index
             fill = COLORS["panel"] if active else (224, 220, 211)
@@ -1117,16 +1072,16 @@ class HybridChessGame:
                 self.screen, border, rect, 3 if selected else 1, border_radius=9
             )
             text_color = COLORS["text"] if active else COLORS["muted"]
-            piece_sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+            piece_sample = Piece(0, item.game, item.kind, self.setup_side, (0, 0))
             self.draw_piece(piece_sample, (rect.x + 24, rect.centery), size=38)
-            key = (self.setup_side, item["game"], item["kind"])
+            key = (self.setup_side, item.game, item.kind)
             count = self.purchase_counts.get(key, 0)
             self.draw_text(
                 self.tr(
                     "setup.price",
-                    cost=item["cost"],
+                    cost=format_points(item.cost_units),
                     count=count,
-                    limit=item["limit"],
+                    limit=item.limit,
                 ),
                 self.fonts["tiny"],
                 text_color,
@@ -1134,7 +1089,7 @@ class HybridChessGame:
             )
 
         preview_item = (
-            PIECE_CATALOG[self.selected_catalog_index]
+            PIECE_DEFINITIONS[self.selected_catalog_index]
             if self.selected_catalog_index is not None
             else self.catalog_item_for(self.kings[self.setup_side])
             if self.selected_setup_king
@@ -1146,11 +1101,10 @@ class HybridChessGame:
         self.draw_text(
             self.status, self.fonts["small"], COLORS["muted"], (SIDEBAR_X + 28, 662)
         )
-        king = self.kings[self.setup_side]
         self.draw_button(
             self.finish_setup_rect(),
             self.tr("setup.finish"),
-            active=valid_king_setup_position(king, king.position),
+            active=self.engine.setup_is_valid(self.setup_side),
         )
 
     def draw_king_selector(self) -> None:
@@ -1166,7 +1120,7 @@ class HybridChessGame:
             affordable = (
                 game == "xiangqi"
                 or selected
-                or self.budgets[self.setup_side] >= CHESS_KING_COST
+                or self.budget_units[self.setup_side] >= CHESS_KING_COST_UNITS
             )
             fill = (255, 239, 189) if selected else COLORS["panel"]
             if not affordable:
@@ -1185,7 +1139,7 @@ class HybridChessGame:
                 center=True,
             )
 
-    def draw_movement_preview(self, item: CatalogItem) -> None:
+    def draw_movement_preview(self, item: PieceDefinition) -> None:
         """Draw localized movement help for the selected shop piece."""
         panel = pygame.Rect(SIDEBAR_X + 24, 468, SIDEBAR_WIDTH - 48, 180)
         pygame.draw.rect(self.screen, (244, 238, 224), panel, border_radius=10)
@@ -1199,7 +1153,7 @@ class HybridChessGame:
             (panel.x + 14, panel.y + 11),
         )
         self.draw_wrapped_text(
-            self.tr(f"movement.{item['game']}.{item['kind']}"),
+            self.tr(f"movement.{item.game}.{item.kind}"),
             self.fonts["tiny"],
             COLORS["muted"],
             (panel.x + 14, panel.y + 43),
@@ -1207,7 +1161,7 @@ class HybridChessGame:
             line_height=19,
         )
 
-        preview_key = (item["game"], item["kind"])
+        preview_key = (item.game, item.kind)
         if preview_key == ("xiangqi", "bing"):
             self.draw_xiangqi_soldier_preview(panel, item)
             return
@@ -1263,7 +1217,7 @@ class HybridChessGame:
             marker.center = preview_point(blocker_offset)
             pygame.draw.rect(self.screen, COLORS["muted"], marker, border_radius=2)
 
-        sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+        sample = Piece(0, item.game, item.kind, self.setup_side, (0, 0))
         self.draw_piece(sample, center, size=34)
         self.draw_movement_legend((panel.x + 14, panel.bottom - 19), pattern)
 
@@ -1319,7 +1273,7 @@ class HybridChessGame:
         return origin[0] + dx * spacing, origin[1] + dy * spacing
 
     def draw_xiangqi_soldier_preview(
-        self, panel: pygame.Rect, item: CatalogItem
+        self, panel: pygame.Rect, item: PieceDefinition
     ) -> None:
         spacing = 23
         diagrams = (
@@ -1349,13 +1303,15 @@ class HybridChessGame:
                     self.oriented_preview_point(center, move, spacing),
                     5,
                 )
-            sample = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+            sample = Piece(0, item.game, item.kind, self.setup_side, (0, 0))
             self.draw_piece(sample, center, size=28)
         self.draw_movement_legend(
             (panel.x + 14, panel.bottom - 19), MovementPreview(((0, -1),))
         )
 
-    def draw_chess_pawn_preview(self, panel: pygame.Rect, item: CatalogItem) -> None:
+    def draw_chess_pawn_preview(
+        self, panel: pygame.Rect, item: PieceDefinition
+    ) -> None:
         spacing = 19
         first_center = (panel.x + 300, panel.y + 106)
         self.draw_wrapped_text(
@@ -1382,7 +1338,7 @@ class HybridChessGame:
                 8,
                 3,
             )
-        pawn = Piece(0, item["game"], item["kind"], self.setup_side, (0, 0))
+        pawn = Piece(0, item.game, item.kind, self.setup_side, (0, 0))
         self.draw_piece(pawn, pawn_center, size=26)
 
         promotion_center = (panel.x + 410, panel.y + 106)
@@ -1426,7 +1382,7 @@ class HybridChessGame:
             (double_step_marker[0] + 11, panel.bottom - 20),
         )
 
-    def draw_general_preview(self, panel: pygame.Rect, item: CatalogItem) -> None:
+    def draw_general_preview(self, panel: pygame.Rect, item: PieceDefinition) -> None:
         center = (panel.x + 362, panel.y + 88)
         spacing = 27
         self.draw_preview_grid(center, columns=5, rows=5, spacing=spacing)
@@ -1628,7 +1584,9 @@ class HybridChessGame:
         self.screen.blit(overlay, (0, 0))
         modal = pygame.Rect(WINDOW_WIDTH // 2 - 320, 245, 640, 365)
         pygame.draw.rect(self.screen, COLORS["panel"], modal, border_radius=18)
-        winner = self.side_name(self.winner or "red")
+        result = self.engine.state.result
+        if result is None:
+            return
         self.draw_text(
             self.tr("game_over.title"),
             self.fonts["subtitle"],
@@ -1636,15 +1594,19 @@ class HybridChessGame:
             (640, 310),
             center=True,
         )
-        self.draw_text(
-            self.tr("game_over.winner", side=winner),
-            self.fonts["title"],
-            TEAM_COLORS[self.winner or "red"],
-            (640, 385),
-            center=True,
+        headline = (
+            self.tr("game_over.draw")
+            if result.winner is None
+            else self.tr("game_over.winner", side=self.side_name(result.winner))
+        )
+        headline_color = (
+            COLORS["accent"] if result.winner is None else TEAM_COLORS[result.winner]
         )
         self.draw_text(
-            self.tr("game_over.reason"),
+            headline, self.fonts["title"], headline_color, (640, 385), center=True
+        )
+        self.draw_text(
+            self.tr(f"game_over.reason.{result.reason}"),
             self.fonts["body"],
             COLORS["text"],
             (640, 445),

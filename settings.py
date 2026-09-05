@@ -1,19 +1,23 @@
-"""Shared configuration for the Hybrid Chess demo."""
+"""Shared presentation settings and canonical piece definitions."""
 
-from typing import Literal, TypedDict
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
 
 Game = Literal["chess", "xiangqi"]
 Side = Literal["red", "black"]
 
 
-class CatalogItem(TypedDict):
-    """Schema shared by the setup shop, renderer, and AI setup request."""
+@dataclass(frozen=True)
+class PieceDefinition:
+    """Canonical metadata shared by setup, rendering, and AI evaluation."""
 
     game: Game
     kind: str
-    cost: float
+    cost_units: int
     limit: int
-    images: dict[Side, str]
+    images: Mapping[Side, str]
+    value_units: int
 
 
 WINDOW_WIDTH = 1280
@@ -30,11 +34,21 @@ PIECE_RADIUS = 25
 SIDEBAR_X = 720
 SIDEBAR_WIDTH = 520
 
-STARTING_BUDGET = 40
+UNITS_PER_POINT = 2
+STARTING_BUDGET_UNITS = 80
 MAX_BOUGHT_PIECES = 20
-CHESS_KING_COST = 3
+CHESS_KING_COST_UNITS = 6
 
-# Prices are expressed as floats because the balancing scale permits 0.5 points.
+# Economy values are integer half-point units: 1 unit is displayed as 0.5 points.
+
+
+def format_points(units: int) -> str:
+    """Format integer half-point units for player-facing text."""
+    sign = "-" if units < 0 else ""
+    whole_points, half_point = divmod(abs(units), UNITS_PER_POINT)
+    suffix = "" if half_point == 0 else ".5"
+    return f"{sign}{whole_points}{suffix}"
+
 
 # Deployment zones are row indices from the top; Red therefore uses larger rows.
 DEPLOYMENT_ROWS = {
@@ -64,96 +78,113 @@ COLORS = {
     "overlay": (24, 27, 31),
 }
 
-PIECE_CATALOG: list[CatalogItem] = [
-    {
-        "game": "xiangqi",
-        "kind": "bing",
-        "cost": 1,
-        "limit": 5,
-        "images": {"red": "Xiangqi_sl1.svg", "black": "Xiangqi_sd1.svg"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "advisor",
-        "cost": 1.5,
-        "limit": 2,
-        "images": {"red": "Xiangqi_al1.svg", "black": "Xiangqi_ad1.svg"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "elephant",
-        "cost": 2,
-        "limit": 2,
-        "images": {"red": "Xiangqi_el1.svg", "black": "Xiangqi_ed1.svg"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "horse",
-        "cost": 2.5,
-        "limit": 2,
-        "images": {"red": "Xiangqi_hl1.svg", "black": "Xiangqi_hd1.svg"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "cannon",
-        "cost": 4.5,
-        "limit": 2,
-        "images": {"red": "Xiangqi_cl1.svg", "black": "Xiangqi_cd1.svg"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "rook",
-        "cost": 6.0,
-        "limit": 2,
-        "images": {"red": "Xiangqi_rl1.svg", "black": "Xiangqi_rd1.svg"},
-    },
-    {
-        "game": "chess",
-        "kind": "pawn",
-        "cost": 1.0,
-        "limit": 8,
-        "images": {"red": "Chess_plt60.png", "black": "Chess_pdt60.png"},
-    },
-    {
-        "game": "chess",
-        "kind": "knight",
-        "cost": 3.0,
-        "limit": 2,
-        "images": {"red": "Chess_nlt60.png", "black": "Chess_ndt60.png"},
-    },
-    {
-        "game": "chess",
-        "kind": "bishop",
-        "cost": 3.5,
-        "limit": 2,
-        "images": {"red": "Chess_blt60.png", "black": "Chess_bdt60.png"},
-    },
-    {
-        "game": "chess",
-        "kind": "rook",
-        "cost": 6.0,
-        "limit": 2,
-        "images": {"red": "Chess_rlt60.png", "black": "Chess_rdt60.png"},
-    },
-    {
-        "game": "chess",
-        "kind": "queen",
-        "cost": 10.0,
-        "limit": 1,
-        "images": {"red": "Chess_qlt60.png", "black": "Chess_qdt60.png"},
-    },
-    {
-        "game": "xiangqi",
-        "kind": "king",
-        "cost": 0,
-        "limit": 0,
-        "images": {"red": "Xiangqi_gl1.svg", "black": "Xiangqi_gd1.svg"},
-    },
-    {
-        "game": "chess",
-        "kind": "king",
-        "cost": CHESS_KING_COST,
-        "limit": 0,
-        "images": {"red": "Chess_klt60.png", "black": "Chess_kdt60.png"},
-    },
-]
+PIECE_DEFINITIONS: tuple[PieceDefinition, ...] = (
+    PieceDefinition(
+        "xiangqi",
+        "bing",
+        2,
+        5,
+        {"red": "Xiangqi_sl1.svg", "black": "Xiangqi_sd1.svg"},
+        2,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "advisor",
+        3,
+        2,
+        {"red": "Xiangqi_al1.svg", "black": "Xiangqi_ad1.svg"},
+        3,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "elephant",
+        4,
+        2,
+        {"red": "Xiangqi_el1.svg", "black": "Xiangqi_ed1.svg"},
+        4,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "horse",
+        5,
+        2,
+        {"red": "Xiangqi_hl1.svg", "black": "Xiangqi_hd1.svg"},
+        5,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "cannon",
+        9,
+        2,
+        {"red": "Xiangqi_cl1.svg", "black": "Xiangqi_cd1.svg"},
+        9,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "rook",
+        12,
+        2,
+        {"red": "Xiangqi_rl1.svg", "black": "Xiangqi_rd1.svg"},
+        12,
+    ),
+    PieceDefinition(
+        "chess",
+        "pawn",
+        2,
+        8,
+        {"red": "Chess_plt60.png", "black": "Chess_pdt60.png"},
+        2,
+    ),
+    PieceDefinition(
+        "chess",
+        "knight",
+        6,
+        2,
+        {"red": "Chess_nlt60.png", "black": "Chess_ndt60.png"},
+        6,
+    ),
+    PieceDefinition(
+        "chess",
+        "bishop",
+        7,
+        2,
+        {"red": "Chess_blt60.png", "black": "Chess_bdt60.png"},
+        7,
+    ),
+    PieceDefinition(
+        "chess",
+        "rook",
+        12,
+        2,
+        {"red": "Chess_rlt60.png", "black": "Chess_rdt60.png"},
+        12,
+    ),
+    PieceDefinition(
+        "chess",
+        "queen",
+        20,
+        1,
+        {"red": "Chess_qlt60.png", "black": "Chess_qdt60.png"},
+        20,
+    ),
+    PieceDefinition(
+        "xiangqi",
+        "king",
+        0,
+        0,
+        {"red": "Xiangqi_gl1.svg", "black": "Xiangqi_gd1.svg"},
+        2000,
+    ),
+    PieceDefinition(
+        "chess",
+        "king",
+        CHESS_KING_COST_UNITS,
+        0,
+        {"red": "Chess_klt60.png", "black": "Chess_kdt60.png"},
+        2000,
+    ),
+)
+
+PIECE_DEFINITION_BY_KEY: dict[tuple[Game, str], PieceDefinition] = {
+    (definition.game, definition.kind): definition for definition in PIECE_DEFINITIONS
+}
